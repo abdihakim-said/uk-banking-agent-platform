@@ -6,6 +6,17 @@ import logging
 import sys
 
 import structlog
+from opentelemetry import trace
+from structlog.typing import EventDict, WrappedLogger
+
+
+def _add_trace_ids(_: WrappedLogger, __: str, event: EventDict) -> EventDict:
+    """Put the current trace and span id on every log line, so a log jumps straight to its trace in Jaeger."""
+    ctx = trace.get_current_span().get_span_context()
+    if ctx.is_valid:
+        event["trace_id"] = format(ctx.trace_id, "032x")
+        event["span_id"] = format(ctx.span_id, "016x")
+    return event
 
 
 def configure_logging(level: str = "INFO", service: str = "bank-assistant") -> None:
@@ -13,6 +24,7 @@ def configure_logging(level: str = "INFO", service: str = "bank-assistant") -> N
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            _add_trace_ids,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),

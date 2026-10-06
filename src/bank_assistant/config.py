@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # Observability
     otel_exporter_otlp_endpoint: str | None = None
+    metrics_port: int | None = 9464  # Prometheus scrape port, separate from the API port; None disables
     service_name: str = "bank-assistant"
 
     @property

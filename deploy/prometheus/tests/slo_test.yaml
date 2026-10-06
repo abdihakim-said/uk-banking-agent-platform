@@ -1,0 +1,59 @@
+# promtool test rules deploy/prometheus/tests/slo_test.yaml
+# Proves the burn-rate alerts fire when they should, and stay quiet when they shouldn't.
+rule_files:
+  - ../../helm/uk-banking-agent-platform/files/rules/slo.yaml
+evaluation_interval: 1m
+
+tests:
+  # 9% of turns fail: far above 14.4x the 0.5% budget, so the fast page alert fires once both windows agree.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{outcome="ok"}'
+        values: '0+91x120'
+      - series: 'gateway_requests_total{outcome="agent_error"}'
+        values: '0+9x120'
+      - series: 'gateway_request_duration_seconds_bucket{le="15.0"}'
+        values: '0+91x120'
+      - series: 'gateway_request_duration_seconds_count'
+        values: '0+91x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: SLOAvailabilityBurnRate1h
+        exp_alerts:
+          - exp_labels: {severity: page, slo: availability}
+            exp_annotations:
+              summary: "Availability SLO burning fast: 2% of the 30-day budget in 1 hour"
+              description: "SLO: 99.5% of chat turns get a real answer (not an error or 'assistant unavailable'). Burn rate over 1h and 5m is above 14.4x."
+      - eval_time: 70m
+        alertname: SLOLatencyBurnRate1h
+        exp_alerts: []
+
+  # 0.2% errors: within budget, nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_requests_total{outcome="ok"}'
+        values: '0+998x120'
+      - series: 'gateway_requests_total{outcome="agent_error"}'
+        values: '0+2x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: SLOAvailabilityBurnRate1h
+        exp_alerts: []
+
+  # Latency: 20% of turns slower than 15s against a 5% budget (4x), so the 1-day ticket alert fires after a day.
+  - interval: 5m
+    input_series:
+      - series: 'gateway_requests_total{outcome="ok"}'
+        values: '0+100x400'
+      - series: 'gateway_request_duration_seconds_bucket{le="15.0"}'
+        values: '0+80x400'
+      - series: 'gateway_request_duration_seconds_count'
+        values: '0+100x400'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: SLOLatencyBurnRate1d
+        exp_alerts:
+          - exp_labels: {severity: ticket, slo: latency}
+            exp_annotations:
+              summary: "Latency SLO burning fast: 10% of the 30-day budget in 1 day"
+              description: "SLO: 95% of successful chat turns complete within 15 seconds. Burn rate over 1d and 2h is above 3x."

@@ -8,6 +8,7 @@ Raw customer text never leaves this process: the agent service and the LLMs only
 from __future__ import annotations
 
 import secrets
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -15,7 +16,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from opentelemetry.propagate import inject
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
@@ -57,6 +58,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
             configure_logging(settings.log_level, "gateway")
             setup_tracing("gateway", settings.otel_exporter_otlp_endpoint)
             deps["redis"] = Redis.from_url(settings.redis_url)
+            metrics.serve_metrics(settings.metrics_port)
         if deps["verifier"] is None:
             deps["verifier"] = JwtVerifier.from_settings(settings.oidc_issuer, settings.oidc_audience,
                                                          settings.oidc_required_scope, settings.oidc_jwks_url,
@@ -91,6 +93,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
     async def chat(body: ChatRequest, request: Request,
                    authorization: Annotated[str | None, Header()] = None) -> ChatResponse:
         redis_client: Redis = deps["redis"]
+        started = time.perf_counter()
         try:
             principal: Principal = deps["verifier"].verify(authorization)
         except AuthError as exc:
@@ -127,10 +130,12 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                 metrics.PII_REDACTIONS.labels(placeholder[1:].rsplit("_", 1)[0], "gateway").inc()
             await store.save_vault(session_id, vault.new_entries)
 
+            headers = {"Authorization": f"Bearer {settings.internal_service_token.get_secret_value()}"}
+            inject(headers)  # W3C traceparent, so the agent's spans join this request's trace
             try:
                 resp = await deps["agent"].post(
                     "/internal/v1/turns",
-                    headers={"Authorization": f"Bearer {settings.internal_service_token.get_secret_value()}"},
+                    headers=headers,
                     json={"session_id": session_id, "customer_id": principal.customer_id, "message": redacted,
                           "known_names": principal.names},
                 )
@@ -144,6 +149,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
 
             vault = PiiVault(await store.load_vault(session_id))  # the agent may have added entries
             metrics.GATEWAY_REQUESTS.labels("ok").inc()
+            metrics.GATEWAY_LATENCY.observe(time.perf_counter() - started)
             log.info("chat_turn", session_id=session_id, route=turn["route"], outcome=turn["outcome"],
                      cost_usd=turn["cost_usd"])
             return ChatResponse(session_id=session_id, reply=vault.render_for_customer(turn["reply"]),
@@ -154,10 +160,24 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
+        """Liveness: the process is serving requests."""
         return {"status": "ok"}
 
-    @app.get("/metrics")
-    async def prometheus_metrics() -> Response:
-        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """Readiness: Redis and the agent service are reachable. Kubernetes only routes traffic when this is 200."""
+        checks: dict[str, str] = {}
+        try:
+            await deps["redis"].ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = type(exc).__name__
+        try:
+            r = await deps["agent"].get("/healthz", timeout=2.0)
+            checks["agent"] = "ok" if r.status_code == 200 else f"HTTP {r.status_code}"
+        except httpx.HTTPError as exc:
+            checks["agent"] = type(exc).__name__
+        ready = all(v == "ok" for v in checks.values())
+        return JSONResponse({"ready": ready, "checks": checks}, status_code=200 if ready else 503)
 
     return app

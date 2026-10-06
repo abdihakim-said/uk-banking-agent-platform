@@ -56,6 +56,7 @@ ignore = ["S101", "S105", "S106", "RUF012"]
 "tests/**" = ["S", "B011"]
 "e2e/**" = ["S"]
 "scripts/**" = ["S"]
+"scripts/gen_*.py" = ["S", "E501"]  # long PromQL and dashboard config strings
 "src/bank_assistant/security/redactor.py" = ["RUF001"]
 
 [tool.mypy]

@@ -12,9 +12,9 @@ from bank_assistant.core.bank_data import CoreBankingStore, Direction, DisputeRe
 from bank_assistant.mcp_servers.common import (
     customer_from,
     domain_errors,
-    http_options,
     request_result,
     secret,
+    serve,
     shared_store,
 )
 
@@ -85,7 +85,7 @@ def build_transactions_server(store: CoreBankingStore, token_secret: str) -> MCP
 
 
 def main() -> None:
-    build_transactions_server(shared_store(), secret()).run("streamable-http", **http_options())
+    serve(build_transactions_server(shared_store(), secret()))
 
 
 if __name__ == "__main__":

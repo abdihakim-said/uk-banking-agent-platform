@@ -303,10 +303,12 @@ class AgentEngine:
                 })
             except BudgetExceededError as exc:
                 log.warning("turn_budget_exceeded", scope=exc.scope)
+                metrics.AGENT_TURNS.labels("budget_exceeded").inc()
                 return TurnResult(REPLIES["budget"], "none", "budget_exceeded", False, False, None, Decimal("0"),
                                   [{"node": "budget", "scope": exc.scope}], [])
             except AllProvidersUnavailableError:
                 log.error("turn_all_providers_unavailable")
+                metrics.AGENT_TURNS.labels("unavailable").inc()
                 return TurnResult(REPLIES["unavailable"], "none", "unavailable", False, False, None, Decimal("0"),
                                   [{"node": "router", "error": "all_providers_unavailable"}], [])
             route = state.get("route", "none")
@@ -314,6 +316,7 @@ class AgentEngine:
             span.set_attribute("agent.outcome", state.get("outcome", ""))
             span.set_attribute("llm.cost_usd", float(state.get("cost_usd", 0)))
         metrics.TURN_LATENCY.labels(route).observe(time.perf_counter() - started)
+        metrics.AGENT_TURNS.labels("completed").inc()
         result = TurnResult(
             reply=state["reply"], route=route, outcome=state.get("outcome", "answered"),
             handoff=state.get("handoff", False), awaiting_confirmation=state.get("awaiting_confirmation", False),

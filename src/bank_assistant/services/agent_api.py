@@ -12,8 +12,9 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+import httpx
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
@@ -22,6 +23,7 @@ from bank_assistant.config import Settings, get_settings
 from bank_assistant.core.session_store import SessionStore
 from bank_assistant.llm.factory import build_router
 from bank_assistant.logging import configure_logging
+from bank_assistant.observability import metrics
 from bank_assistant.observability.cost import CostTracker
 from bank_assistant.observability.tracing import setup_tracing
 from bank_assistant.security.redactor import Redactor, default_name_detector
@@ -54,6 +56,7 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
         if state["engine"] is None:
             configure_logging(settings.log_level, "agent-service")
             setup_tracing("agent-service", settings.otel_exporter_otlp_endpoint)
+            metrics.serve_metrics(settings.metrics_port)
             redis = Redis.from_url(settings.redis_url)
             state["engine"] = AgentEngine(AgentDeps(
                 router=build_router(settings),
@@ -85,11 +88,31 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
+        """Liveness: the process is serving requests."""
         return {"status": "ok"}
 
-    @app.get("/metrics")
-    async def prometheus_metrics() -> Response:
-        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        """Readiness: Redis and every MCP server answer. Without them a turn can't complete."""
+        engine: AgentEngine = state["engine"]
+        checks: dict[str, str] = {}
+        try:
+            await engine.deps.store.redis.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = type(exc).__name__
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            for domain, target in engine.deps.mcp_targets.items():
+                if not isinstance(target, str):
+                    checks[f"mcp_{domain}"] = "ok"  # in-process server (tests)
+                    continue
+                try:
+                    r = await client.get(target.rsplit("/mcp", 1)[0] + "/healthz")
+                    checks[f"mcp_{domain}"] = "ok" if r.status_code == 200 else f"HTTP {r.status_code}"
+                except httpx.HTTPError as exc:
+                    checks[f"mcp_{domain}"] = type(exc).__name__
+        ready = all(v == "ok" for v in checks.values())
+        return JSONResponse({"ready": ready, "checks": checks}, status_code=200 if ready else 503)
 
     return app
 

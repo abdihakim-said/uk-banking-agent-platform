@@ -11,9 +11,9 @@ from bank_assistant.core.bank_data import CoreBankingStore
 from bank_assistant.mcp_servers.common import (
     customer_from,
     domain_errors,
-    http_options,
     request_result,
     secret,
+    serve,
     shared_store,
 )
 
@@ -69,7 +69,7 @@ def build_accounts_server(store: CoreBankingStore, token_secret: str) -> MCPServ
 
 
 def main() -> None:
-    build_accounts_server(shared_store(), secret()).run("streamable-http", **http_options())
+    serve(build_accounts_server(shared_store(), secret()))
 
 
 if __name__ == "__main__":
