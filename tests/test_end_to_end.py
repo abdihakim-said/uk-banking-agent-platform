@@ -30,6 +30,12 @@ async def test_pii_never_reaches_the_model(stack: Stack) -> None:
     assert "[SORT_CODE_1]" in seen and "[ACCOUNT_NUMBER_1]" in seen
 
 
+async def test_reply_lists_kinds_of_data_hidden(stack: Stack) -> None:
+    r = (await stack.chat("My account is 41234567 and email a@example.com, what's my balance?")).json()
+    assert r["redacted"] == ["ACCOUNT_NUMBER", "EMAIL"]
+    assert (await stack.chat("What's my balance?")).json()["redacted"] == []
+
+
 async def test_dispute_needs_confirmation_and_executes_stored_arguments(stack: Stack) -> None:
     first = (await stack.chat("I don't recognise the Netflix payment, please dispute it")).json()
     assert first["awaiting_confirmation"] and "Netflix" in first["reply"]

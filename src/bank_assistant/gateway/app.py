@@ -43,6 +43,7 @@ class ChatResponse(BaseModel):
     awaiting_confirmation: bool
     handoff: bool
     route: str
+    redacted: list[str] = Field(default_factory=list, description="Kinds of personal data hidden from the AI")
 
 
 def create_app(settings: Settings | None = None, redis: Redis | None = None, verifier: JwtVerifier | None = None,
@@ -120,6 +121,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
             raise fail(409, "the previous message in this session is still being processed", "busy")
         try:
             vault = PiiVault(await store.load_vault(session_id))
+            hidden = sorted({f.type.value for f in deps["redactor"].find(body.message, principal.names)})
             redacted = deps["redactor"].redact(body.message, vault, principal.names)
             for placeholder in vault.new_entries:
                 metrics.PII_REDACTIONS.labels(placeholder[1:].rsplit("_", 1)[0], "gateway").inc()
@@ -146,7 +148,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                      cost_usd=turn["cost_usd"])
             return ChatResponse(session_id=session_id, reply=vault.render_for_customer(turn["reply"]),
                                 awaiting_confirmation=turn["awaiting_confirmation"], handoff=turn["handoff"],
-                                route=turn["route"])
+                                route=turn["route"], redacted=hidden)
         finally:
             await lock.release(session_id)
 

@@ -1,8 +1,7 @@
-# Local stack. Only the gateway (8080), Jaeger UI (16686) and Prometheus (9090) are published to the host;
+# Local stack. Only the web app (3080), gateway API (8080), Jaeger UI (16686) and Prometheus (9090) are published;
 # the agent service, MCP servers and Redis are reachable only on the internal network.
 #
-#   python scripts/dev_idp.py keys          # once: dev signing keys for local tokens
-#   docker compose up --build
+#   docker compose up --build              # then open http://localhost:3080
 #   docker compose --profile private-llm up # also start Ollama as a self-hosted fallback
 
 x-app: &app
@@ -16,6 +15,7 @@ x-app: &app
   networks: [internal]
   environment: &env
     BANK_ENVIRONMENT: dev
+    BANK_OIDC_ISSUER: http://demo-idp:8000
     BANK_REDIS_URL: redis://redis:6379/0
     BANK_CONTEXT_TOKEN_SECRET: ${BANK_CONTEXT_TOKEN_SECRET:-dev-only-change-me-dev-only-change-me}
     BANK_INTERNAL_SERVICE_TOKEN: ${BANK_INTERNAL_SERVICE_TOKEN:-dev-only-change-me-dev-only-change-me}
@@ -31,9 +31,27 @@ services:
     environment:
       <<: *env
       BANK_AGENT_SERVICE_URL: http://agent:8001
-      BANK_OIDC_DEV_PUBLIC_KEY_PATH: /keys/public.pem
-    volumes: ["./.dev-keys/public.pem:/keys/public.pem:ro"]
-    depends_on: [agent, redis]
+      # Tokens are validated against the demo IdP's JWKS, exactly as against a production IdP.
+      BANK_OIDC_JWKS_URL: http://demo-idp:8000/.well-known/jwks.json
+    depends_on: [agent, redis, demo-idp]
+
+  # Demo only: issues tokens for the two synthetic customers. Remove for any real deployment.
+  demo-idp:
+    <<: *app
+    command: ["uvicorn", "bank_assistant.demo_idp.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment: {<<: *env, BANK_DEMO_IDP_ENABLED: "true"}
+
+  web:
+    build: ./web
+    image: uk-banking-agent-platform-web:local
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    ports: ["${WEB_PORT:-3080}:8080"]
+    networks: [internal, edge]
+    depends_on: [gateway, demo-idp]
 
   agent:
     <<: *app

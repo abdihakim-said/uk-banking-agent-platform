@@ -76,7 +76,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install          # venv + dependencies
 make demo             # scripted conversation through the whole stack, offline (no API key, no Docker)
-make test             # 90 tests
+make test             # 94 tests
 make eval             # evaluation suite with thresholds (what CI runs)
 ```
 
@@ -88,16 +88,37 @@ With Claude (uses `ANTHROPIC_API_KEY` or an `ant auth login` profile; each turn 
 make eval-claude
 ```
 
-Full stack in containers (gateway, agent service, 3 MCP servers, Redis, Jaeger, Prometheus):
+Full stack in containers (web app, demo IdP, gateway, agent service, 3 MCP servers, Redis, Jaeger, Prometheus):
 
 ```bash
-make up                                   # generates dev signing keys, then docker compose up
+make up                       # docker compose up --build
+open http://localhost:3080    # web app: sign in as Amina or Daniel and chat
+make e2e                      # browser tests (Playwright) against the running stack
+open http://localhost:16686   # traces
+open http://localhost:9090    # metrics and alerts
+
+# The API directly
 TOKEN=$(make -s token CUSTOMER=C001)
 curl -s localhost:8080/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"message": "What is my balance?"}'
-open http://localhost:16686   # traces
-open http://localhost:9090    # metrics and alerts
 ```
+
+Ports 3080 and 8080 can be changed with `WEB_PORT` and `GATEWAY_PORT`.
+
+### Web app
+
+`web/` is a dependency-free page (HTML, CSS, one JavaScript module) served by nginx, which also proxies `/api` to the
+gateway and `/auth` to the demo IdP, so the browser talks to one origin. It shows:
+
+- a persona switcher (Amina or Daniel), each with their own synthetic accounts
+- **Hidden from AI** badges on your message, listing the kinds of personal data the gateway replaced
+- the agent that answered, **Yes / No** buttons for actions that need confirmation, and banners for human handoffs
+  and guardrails
+
+The **demo IdP** (`src/bank_assistant/demo_idp/`) issues tokens for the two personas and publishes its key as a JWKS,
+which the gateway uses exactly as it would a real identity provider's. It refuses to start unless
+`BANK_DEMO_IDP_ENABLED=true` and the environment isn't `prod`. For a real deployment, remove the `demo-idp` service
+and set `BANK_OIDC_JWKS_URL` and `BANK_OIDC_ISSUER` to your IdP.
 
 Add a self-hosted fallback model with `docker compose --profile private-llm up`, then
 `docker compose exec ollama ollama pull llama3.1:8b` and `BANK_PRIVATE_LLM_BASE_URL=http://ollama:11434`.
@@ -168,8 +189,11 @@ src/bank_assistant/
   observability/  OpenTelemetry setup, Prometheus metrics, cost tracking and budgets
   core/           synthetic core banking store, signed context tokens, Redis session store
   services/       internal agent-service API
+  demo_idp/       demo-only token issuer for the two personas (JWKS-published key)
   evals/          dataset and runner
 tests/            unit, integration and adversarial tests (scripted hostile model)
+e2e/              Playwright browser tests against the running compose stack
+web/              chat web app + nginx edge config
 deploy/           Prometheus config and alert rules
 ```
 

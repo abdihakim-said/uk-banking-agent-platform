@@ -22,7 +22,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
       - name: Lint and type-check
-        run: .venv/bin/ruff check src tests scripts && .venv/bin/mypy src
+        run: .venv/bin/ruff check src tests scripts e2e && .venv/bin/mypy src
       - name: Tests
         run: .venv/bin/python -m pytest -q
       - name: Guardrail evals (offline model; checks routing, confirmations, PII and grounding)
@@ -43,6 +43,22 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+
+  e2e:
+    name: browser e2e (full compose stack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev,e2e]"
+      - run: .venv/bin/python -m playwright install --with-deps chromium
+      - name: Start the stack (no API key, so the agent falls back to the offline model)
+        run: |
+          docker compose up --build -d
+          for i in $(seq 1 60); do curl -sf localhost:3080/auth/personas >/dev/null && break; sleep 2; done
+      - run: .venv/bin/python -m pytest e2e -q
+      - if: failure()
+        run: docker compose ps -a && docker compose logs --tail 80
 
   live-eval:
     if: github.event_name == 'workflow_dispatch' && inputs.live_eval

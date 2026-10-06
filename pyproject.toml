@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ner = ["spacy>=3.7"]
+e2e = ["pytest-playwright>=0.5"]
 dev = ["fakeredis>=2.26", "mypy>=1.11", "pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "types-PyYAML"]
 
 [project.scripts]
@@ -53,6 +54,7 @@ ignore = ["S101", "S105", "S106", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "B011"]
+"e2e/**" = ["S"]
 "scripts/**" = ["S"]
 "src/bank_assistant/security/redactor.py" = ["RUF001"]
 

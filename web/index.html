@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Banking Assistant Demo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true">◆</span> Banking Assistant <span class="tag">Demo · synthetic data</span></div>
+    <nav class="personas" aria-label="Sign in as" id="personas"></nav>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Conversation">
+      <div class="signed-out" id="signed-out">
+        <h1>Sign in as a test customer</h1>
+        <p>Choose Amina or Daniel above. Each has their own synthetic accounts, so you can check that one customer can
+          never see the other's data.</p>
+      </div>
+      <ol class="messages" id="messages" aria-live="polite" hidden></ol>
+      <div class="suggestions" id="suggestions" hidden></div>
+      <form class="composer" id="composer" hidden>
+        <label for="input" class="visually-hidden">Message</label>
+        <input id="input" name="message" autocomplete="off" maxlength="2000"
+               placeholder="Ask about your balance, payments, cards…" required>
+        <button type="submit" id="send">Send</button>
+      </form>
+    </section>
+
+    <aside class="panel" aria-label="What the platform did">
+      <h2>Behind the scenes</h2>
+      <dl class="facts">
+        <dt>Signed in as</dt><dd id="fact-user">—</dd>
+        <dt>Session</dt><dd id="fact-session">—</dd>
+        <dt>Last route</dt><dd id="fact-route">—</dd>
+      </dl>
+      <h3>Legend</h3>
+      <ul class="legend">
+        <li><span class="badge badge-pii">Hidden from AI</span> personal data replaced before any model saw it</li>
+        <li><span class="badge badge-confirm">Needs your OK</span> nothing changes until you confirm</li>
+        <li><span class="badge badge-human">Human handoff</span> passed to a person (complaints, vulnerability)</li>
+        <li><span class="badge badge-guard">Guardrail</span> request declined or signposted</li>
+      </ul>
+      <p class="note">Replies come from the agent platform through the gateway. Account and card numbers are masked even
+        to you.</p>
+    </aside>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
