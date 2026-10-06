@@ -1,0 +1,100 @@
+# Local stack. Only the gateway (8000), Jaeger UI (16686) and Prometheus (9090) are published to the host;
+# the agent service, MCP servers and Redis are reachable only on the internal network.
+#
+#   python scripts/dev_idp.py keys          # once: dev signing keys for local tokens
+#   docker compose up --build
+#   docker compose --profile private-llm up # also start Ollama as a self-hosted fallback
+
+x-app: &app
+  build: .
+  image: uk-banking-agent-platform:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  networks: [internal]
+  environment: &env
+    BANK_ENVIRONMENT: dev
+    BANK_REDIS_URL: redis://redis:6379/0
+    BANK_CONTEXT_TOKEN_SECRET: ${BANK_CONTEXT_TOKEN_SECRET:-dev-only-change-me-dev-only-change-me}
+    BANK_INTERNAL_SERVICE_TOKEN: ${BANK_INTERNAL_SERVICE_TOKEN:-dev-only-change-me-dev-only-change-me}
+    BANK_OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+
+services:
+  gateway:
+    <<: *app
+    command: ["uvicorn", "bank_assistant.gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    networks: [internal, edge]
+    environment:
+      <<: *env
+      BANK_AGENT_SERVICE_URL: http://agent:8001
+      BANK_OIDC_DEV_PUBLIC_KEY_PATH: /keys/public.pem
+    volumes: ["./.dev-keys/public.pem:/keys/public.pem:ro"]
+    depends_on: [agent, redis]
+
+  agent:
+    <<: *app
+    # Needs outbound HTTPS to the model API. In production, restrict egress to that host via a proxy.
+    networks: [internal, edge]
+    command: ["uvicorn", "bank_assistant.services.agent_api:create_app", "--factory", "--host", "0.0.0.0",
+              "--port", "8001"]
+    environment:
+      <<: *env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BANK_LLM_ROUTE: ${BANK_LLM_ROUTE:-anthropic,private,rule_based}
+      BANK_PRIVATE_LLM_BASE_URL: ${BANK_PRIVATE_LLM_BASE_URL:-}
+      BANK_PRIVATE_LLM_MODEL: ${BANK_PRIVATE_LLM_MODEL:-llama3.1:8b}
+      BANK_MCP_ACCOUNTS_URL: http://accounts-mcp:9101/mcp
+      BANK_MCP_TRANSACTIONS_URL: http://transactions-mcp:9102/mcp
+      BANK_MCP_SERVICE_URL: http://service-mcp:9103/mcp
+    depends_on: [accounts-mcp, transactions-mcp, service-mcp, redis]
+
+  accounts-mcp:
+    <<: *app
+    command: ["python", "-m", "bank_assistant.mcp_servers.accounts_server"]
+    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9101"}
+
+  transactions-mcp:
+    <<: *app
+    command: ["python", "-m", "bank_assistant.mcp_servers.transactions_server"]
+    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9102"}
+
+  service-mcp:
+    <<: *app
+    command: ["python", "-m", "bank_assistant.mcp_servers.service_server"]
+    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9103"}
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb",
+              "--maxmemory-policy", "volatile-lru"]
+    networks: [internal]
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment: {COLLECTOR_OTLP_ENABLED: "true"}
+    ports: ["16686:16686"]
+    networks: [internal, edge]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes: ["./deploy:/etc/prometheus:ro"]
+    ports: ["9090:9090"]
+    networks: [internal, edge]
+
+  ollama:
+    image: ollama/ollama:0.4.7
+    profiles: [private-llm]
+    networks: [internal]
+    volumes: [ollama:/root/.ollama]
+
+networks:
+  internal:
+    internal: true
+  edge: {}
+
+volumes:
+  ollama: {}

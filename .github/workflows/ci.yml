@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      live_eval:
+        description: "Also run the eval suite against Claude (uses the ANTHROPIC_API_KEY secret)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
+      - name: Lint and type-check
+        run: .venv/bin/ruff check src tests scripts && .venv/bin/mypy src
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
+      - name: Guardrail evals (offline model; checks routing, confirmations, PII and grounding)
+        run: .venv/bin/bank-eval --report eval-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: eval-report, path: eval-report.json}
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t uk-banking-agent-platform:ci .
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: uk-banking-agent-platform:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  live-eval:
+    if: github.event_name == 'workflow_dispatch' && inputs.live_eval
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev]"
+      - run: .venv/bin/bank-eval --provider anthropic --report eval-report-claude.json
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: eval-report-claude, path: eval-report-claude.json}
