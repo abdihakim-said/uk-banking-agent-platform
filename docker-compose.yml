@@ -1,4 +1,4 @@
-# Local stack. Only the gateway (8000), Jaeger UI (16686) and Prometheus (9090) are published to the host;
+# Local stack. Only the gateway (8080), Jaeger UI (16686) and Prometheus (9090) are published to the host;
 # the agent service, MCP servers and Redis are reachable only on the internal network.
 #
 #   python scripts/dev_idp.py keys          # once: dev signing keys for local tokens
@@ -6,8 +6,8 @@
 #   docker compose --profile private-llm up # also start Ollama as a self-hosted fallback
 
 x-app: &app
-  build: .
   image: uk-banking-agent-platform:local
+  pull_policy: never   # built once by the gateway service below
   restart: unless-stopped
   read_only: true
   tmpfs: [/tmp]
@@ -24,8 +24,9 @@ x-app: &app
 services:
   gateway:
     <<: *app
+    build: .
     command: ["uvicorn", "bank_assistant.gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-    ports: ["8000:8000"]
+    ports: ["${GATEWAY_PORT:-8080}:8000"]
     networks: [internal, edge]
     environment:
       <<: *env

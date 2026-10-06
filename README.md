@@ -93,7 +93,7 @@ Full stack in containers (gateway, agent service, 3 MCP servers, Redis, Jaeger, 
 ```bash
 make up                                   # generates dev signing keys, then docker compose up
 TOKEN=$(make -s token CUSTOMER=C001)
-curl -s localhost:8000/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+curl -s localhost:8080/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"message": "What is my balance?"}'
 open http://localhost:16686   # traces
 open http://localhost:9090    # metrics and alerts
