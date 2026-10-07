@@ -114,6 +114,8 @@ curl -s localhost:8080/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-typ
   -d '{"message": "What is my balance?"}'
 ```
 
+For a recorded or live walkthrough, follow [docs/demo-script.md](docs/demo-script.md).
+
 Ports 3080, 8080 and 3300 can be changed with `WEB_PORT`, `GATEWAY_PORT` and `GRAFANA_PORT`.
 
 On Kubernetes, use the Helm chart and Argo CD manifests. `make kind-up && make kind-test` deploys the chart to a local
