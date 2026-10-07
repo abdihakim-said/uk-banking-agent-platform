@@ -18,6 +18,28 @@ trap 'kill $PF 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do curl -sf localhost:3081/healthz >/dev/null && break; sleep 1; done
 WEB_URL=http://localhost:3081 "$PY" -m pytest e2e -q
 
+# Replicas share runtime state: dispute the same payment several times through the real app. With per-replica
+# memory (the old bug), roughly half the repeats would be accepted by the replica that hadn't seen the first one.
+"$PY" - <<'PYEOF'
+import sys, httpx
+base = "http://localhost:3081"
+c = httpx.Client(timeout=60)
+token = c.post(f"{base}/auth/token", json={"customer_id": "C001"}).json()["access_token"]
+h = {"Authorization": f"Bearer {token}"}
+def say(text, sid=None):
+    body = {"message": text} | ({"session_id": sid} if sid else {})
+    r = c.post(f"{base}/api/v1/chat", json=body, headers=h).json()
+    return r["session_id"], r["reply"]
+accepted = 0
+for attempt in range(6):
+    sid, reply = say("I don't recognise the Spotify payment, please dispute it")
+    if "Reply YES" in reply:
+        _, reply = say("yes", sid)
+        accepted += "has been submitted" in reply
+print(f"duplicate dispute attempts accepted: {accepted} of 6 (expected exactly 1)")
+sys.exit(0 if accepted == 1 else 1)
+PYEOF
+
 fail=0
 probe() {  # probe <from-deployment> <url> <expect: open|blocked>
   local out

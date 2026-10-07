@@ -21,7 +21,7 @@ needs no API key. CI runs the same smoke test on every push.
 | web (nginx) | 2 | `/healthz` | Only entry point. Proxies `/api` to the gateway and `/auth` to the demo IdP when enabled. |
 | gateway | 2, HPA 2–6 | live `/healthz`, ready `/readyz` (Redis + agent) | |
 | agent | 2, HPA 2–10 | live `/healthz`, ready `/readyz` (Redis + 3 MCP servers) | 90s grace period so LLM tool loops can finish. Only pod holding the model API key. |
-| accounts / transactions / service MCP | 2 each | `/healthz` | No egress at all beyond DNS. |
+| accounts / transactions / service MCP | 2 each | `/healthz` | Egress only to Redis, where runtime state is shared by all replicas. |
 | demo IdP | off | `/healthz` | Dev only. The app refuses to start when `environment: prod`. |
 | Redis | off | TCP | Dev only. The chart refuses `redis.deploy` in prod. |
 
@@ -39,13 +39,15 @@ The release starts from **default deny** (ingress and egress) and then allows on
 ```
 ingress controller ─▶ web ─▶ gateway ─▶ agent ─▶ accounts-mcp / transactions-mcp / service-mcp
                        └──▶ demo IdP ◀──┘  │
-                     gateway, agent ─▶ Redis
+                     gateway, agent, MCP servers ─▶ Redis
                      agent ─▶ HTTPS outside the cluster (LLM API)
                      gateway ─▶ HTTPS outside the cluster (IdP JWKS; only when the demo IdP is off)
                      monitoring namespace ─▶ :9464 on every pod;  every pod ─▶ OTLP collector (when configured)
 ```
 
 `deploy/kind/smoke-test.sh` proves both sides on a real cluster:
+- **replicas agree:** with 2 copies of each MCP server, disputing the same payment 6 times through the app is accepted
+  exactly once
 - **allowed paths work:** gateway → agent, and agent → each MCP server
 - **everything else is blocked:**
   - gateway → MCP server

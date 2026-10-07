@@ -63,9 +63,13 @@ def request_result(request: ServiceRequest) -> dict[str, Any]:
 
 
 def shared_store() -> CoreBankingStore:
-    """Each MCP server process seeds the same synthetic dataset (same seed), standing in for the
-    separate backend systems a bank would have behind each domain."""
-    return CoreBankingStore()
+    """Every MCP server process seeds the same synthetic reference data (same seed). Runtime state (disputes, card
+    replacements, requests) is in Redis, so all replicas of all three servers agree on it."""
+    from redis import Redis
+
+    from bank_assistant.core.bank_state import RedisBankState
+
+    return CoreBankingStore(state=RedisBankState(Redis.from_url(get_settings().redis_url)))
 
 
 def secret() -> str:

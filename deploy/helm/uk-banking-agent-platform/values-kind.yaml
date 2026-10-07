@@ -17,9 +17,10 @@ redis:
 components:
   gateway: {replicas: 1, autoscaling: {enabled: false}, pdb: {enabled: false}}
   agent: {replicas: 1, autoscaling: {enabled: false}, pdb: {enabled: false}}
-  accountsMcp: {replicas: 1, pdb: {enabled: false}}
-  transactionsMcp: {replicas: 1, pdb: {enabled: false}}
-  serviceMcp: {replicas: 1, pdb: {enabled: false}}
+  # Two replicas of each MCP server, so the smoke test proves they share state through Redis.
+  accountsMcp: {replicas: 2, pdb: {enabled: false}}
+  transactionsMcp: {replicas: 2, pdb: {enabled: false}}
+  serviceMcp: {replicas: 2, pdb: {enabled: false}}
   demoIdp: {enabled: true}
   web: {replicas: 1, pdb: {enabled: false}}
 

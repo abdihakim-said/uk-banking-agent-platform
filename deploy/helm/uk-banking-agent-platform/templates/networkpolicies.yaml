@@ -116,7 +116,7 @@ spec:
 {{- range $k := list "accountsMcp" "transactionsMcp" "serviceMcp" }}
 {{- $m := index $c $k }}
 ---
-# {{ $m.name }}: only from the agent; no egress beyond DNS (and traces).
+# {{ $m.name }}: only from the agent; egress only to Redis (shared runtime state), DNS and traces.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -125,10 +125,12 @@ metadata:
 spec:
   podSelector:
     matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $m.name) | nindent 6 }}
-  policyTypes: [Ingress]
+  policyTypes: [Ingress, Egress]
   ingress:
     - from: {{- include "bank.np.from" (dict "root" $root "name" $c.agent.name) | nindent 8 }}
       ports: [{port: {{ $m.port }}, protocol: TCP}]
+  egress:
+    {{- include "bank.np.redis" $root | nindent 4 }}
 {{- end }}
 {{- if $c.demoIdp.enabled }}
 ---
@@ -162,6 +164,9 @@ spec:
     - from:
         {{- include "bank.np.from" (dict "root" . "name" $c.gateway.name) | nindent 8 }}
         {{- include "bank.np.from" (dict "root" . "name" $c.agent.name) | nindent 8 }}
+        {{- range $k := list "accountsMcp" "transactionsMcp" "serviceMcp" }}
+        {{- include "bank.np.from" (dict "root" $root "name" (index $c $k).name) | nindent 8 }}
+        {{- end }}
       ports: [{port: 6379, protocol: TCP}]
 {{- end }}
 {{- end }}

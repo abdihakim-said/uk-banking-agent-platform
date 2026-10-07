@@ -1,6 +1,8 @@
 """A deterministic, in-memory stand-in for a core banking system.
 
 Every method takes the customer id from a verified context token and enforces ownership itself.
+Reference data is seeded identically in every process; everything that changes at runtime goes through a
+``BankState`` (Redis in deployments, so every replica agrees; memory in tests).
 A record that exists but belongs to someone else is reported exactly like one that doesn't exist,
 so the API never confirms another customer's account or transaction ids.
 
@@ -9,7 +11,6 @@ All data is synthetic. Real deployments replace this class with adapters to the 
 
 from __future__ import annotations
 
-import itertools
 import random
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
@@ -17,6 +18,8 @@ from decimal import Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
+
+from bank_assistant.core.bank_state import BankState, MemoryBankState
 
 
 class NotFoundError(Exception):
@@ -131,16 +134,14 @@ _MERCHANTS: list[tuple[str, str, Decimal, Decimal]] = [
 class CoreBankingStore:
     """Synthetic data for two customers, generated from a fixed seed relative to ``today``."""
 
-    def __init__(self, today: date | None = None, seed: int = 7) -> None:
+    def __init__(self, today: date | None = None, seed: int = 7, state: BankState | None = None) -> None:
         self.today = today or datetime.now(UTC).date()
         self._rng = random.Random(seed)  # noqa: S311 - synthetic data, not security
-        self._refs = itertools.count(100001)
+        self.state: BankState = state or MemoryBankState()
         self.customers: dict[str, Customer] = {}
         self.accounts: dict[str, Account] = {}
         self.transactions: dict[str, Transaction] = {}
         self.cards: dict[str, Card] = {}
-        self.requests: dict[str, ServiceRequest] = {}
-        self.disputed: set[str] = set()
         self._seed()
 
     # ---- seed -------------------------------------------------------------------------------
@@ -194,7 +195,18 @@ class CoreBankingStore:
                                                amount=amount.quantize(Decimal("0.01")), direction=direction)
 
     def _new_ref(self, prefix: str) -> str:
-        return f"{prefix}-{next(self._refs)}"
+        return f"{prefix}-{self.state.next_id()}"
+
+    @property
+    def disputed(self) -> set[str]:
+        """Transaction ids with an open dispute (across all replicas)."""
+        return self.state.members("disputed:")
+
+    def is_disputed(self, transaction_id: str) -> bool:
+        return self.state.exists(f"disputed:{transaction_id}")
+
+    def card_status(self, card: Card) -> str:
+        return "replaced" if self.state.exists(f"card_replaced:{card.card_ref}") else card.status
 
     # ---- ownership helpers -----------------------------------------------------------------
     def customer(self, customer_id: str) -> Customer:
@@ -284,25 +296,27 @@ class CoreBankingStore:
         tx = self.transaction(customer_id, transaction_id)
         if tx.direction is not Direction.DEBIT:
             raise BusinessRuleError("only debits can be disputed")
-        if transaction_id in self.disputed:
+        if self.is_disputed(transaction_id):
             raise BusinessRuleError("this transaction already has an open dispute")
         # Payment Services Regulations 2017: unauthorised transactions must be reported within 13 months.
         if (self.today - tx.booked_at).days > 396:
             raise BusinessRuleError("transactions older than 13 months can't be disputed here")
-        request = self._service_request(customer_id, "dispute", execute, {
+        # Claim first, atomically: if two replicas confirm the same dispute at once, only one wins.
+        if execute and not self.state.claim(f"disputed:{transaction_id}"):
+            raise BusinessRuleError("this transaction already has an open dispute")
+        return self._service_request(customer_id, "dispute", execute, {
             "transaction": f"{tx.merchant} £{tx.amount} on {tx.booked_at.isoformat()}", "reason": reason.value,
             "description": description[:300],
         })
-        if execute:
-            self.disputed.add(transaction_id)
-        return request
 
     # ---- service ----------------------------------------------------------------------------
     def reissue_card(self, customer_id: str, card_ref: str, reason: CardReissueReason, execute: bool) -> ServiceRequest:
         card = self.card(customer_id, card_ref)
-        if card.status == "replaced":
+        if self.card_status(card) == "replaced":
             raise BusinessRuleError("this card has already been replaced")
         blocks_now = reason in (CardReissueReason.LOST, CardReissueReason.STOLEN)
+        if execute and not self.state.claim(f"card_replaced:{card_ref}"):
+            raise BusinessRuleError("this card has already been replaced")
         request = self._service_request(customer_id, "card_reissue", execute, {
             "card": f"card ending {card.last4}", "reason": reason.value,
             "old_card": "blocked immediately" if blocks_now else "keeps working until the new card is activated",
@@ -316,8 +330,8 @@ class CoreBankingStore:
         account = self.account(customer_id, account_ref)
         if account.type is not AccountType.CURRENT:
             raise BusinessRuleError("cheque books are only available on current accounts")
-        if any(r.customer_id == customer_id and r.kind == "cheque_book" and r.status == "submitted"
-               and r.details.get("account") == f"{account.name} {account.masked}" for r in self.requests.values()):
+        pending_key = f"cheque_pending:{account.account_ref}"
+        if self.state.exists(pending_key) or (execute and not self.state.claim(pending_key)):
             raise BusinessRuleError("a cheque book is already on its way for this account")
         return self._service_request(customer_id, "cheque_book", execute, {
             "account": f"{account.name} {account.masked}", "delivery": "5-7 working days to the address we hold",
@@ -337,8 +351,8 @@ class CoreBankingStore:
         })
 
     def service_requests(self, customer_id: str) -> list[ServiceRequest]:
-        return sorted((r for r in self.requests.values() if r.customer_id == customer_id),
-                      key=lambda r: r.created_at, reverse=True)
+        requests = [ServiceRequest.model_validate_json(raw) for raw in self.state.requests_for(customer_id)]
+        return sorted(requests, key=lambda r: r.created_at, reverse=True)
 
     def _service_request(self, customer_id: str, kind: str, execute: bool, details: dict[str, str]) -> ServiceRequest:
         request = ServiceRequest(
@@ -347,5 +361,5 @@ class CoreBankingStore:
             created_at=datetime.now(UTC), details=details,
         )
         if execute:
-            self.requests[request.reference] = request
+            self.state.save_request(customer_id, request.reference, request.model_dump_json())
         return request

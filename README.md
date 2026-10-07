@@ -9,6 +9,16 @@ carry it out: the customer has to confirm first. Every turn reports its cost, it
 > is: compliance belongs to the firm that operates it. [`docs/compliance.md`](docs/compliance.md) maps each control
 > to the UK obligation it supports and lists what a bank would still have to add.
 
+## What this is, and what it isn't
+
+| It is | It isn't |
+|---|---|
+| The **AI assistant layer** a bank would put in front of its systems: agents, guardrails, tool servers, cost control, observability, Kubernetes deployment | A bank, or an online-banking app |
+| A chat web app for two **synthetic** customers (Amina and Daniel) | Accounts dashboards, payments, transfers or payees (there are no payment tools) |
+| Tool servers over an in-process **synthetic core banking** model, with runtime state shared through Redis | Connected to a real core banking system, card processor or payment rails |
+| A demo login service that issues test tokens | Real customer login with MFA or strong customer authentication |
+| A human-handoff decision, returned to the caller | A contact-centre queue that receives the handoff |
+
 ## Why this exists
 
 Putting an LLM in front of bank customers raises five problems that a chatbot demo doesn't answer:
@@ -76,7 +86,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install          # venv + dependencies
 make demo             # scripted conversation through the whole stack, offline (no API key, no Docker)
-make test             # 94 tests
+make test             # 99 tests
 make eval             # evaluation suite with thresholds (what CI runs)
 ```
 
@@ -221,7 +231,11 @@ deploy/prometheus/ Prometheus config for compose, and rule unit tests
 
 ## Known limitations
 
-- **Synthetic backend.** `CoreBankingStore` stands in for core banking; each MCP server process seeds its own copy.
+- **Synthetic backend.** `CoreBankingStore` stands in for core banking. Every MCP server process seeds the same
+  reference data (2 customers, their accounts and 90 days of transactions). Runtime changes (disputes, replaced cards,
+  cheque books, requests) live in Redis with atomic "only once" checks, so any number of replicas agree. There is no
+  durable database: in production this layer is replaced by adapters to the bank's real systems.
+- **Chat only.** No online-banking screens, no payments, no audit log, no staff back-office.
 - **Redaction is pattern-based** plus names from the identity token. It doesn't catch free-text descriptions of
   people or health details; add an NER model (`pip install -e ".[ner]"` plus a spaCy model) and test it on real
   traffic samples.

@@ -58,7 +58,7 @@ def build_transactions_server(store: CoreBankingStore, token_secret: str) -> MCP
     @domain_errors
     def get_transaction(context_token: str, transaction_id: str) -> dict[str, Any]:
         tx = store.transaction(customer_from(context_token, token_secret), transaction_id)
-        return {**_tx(tx), "disputed": transaction_id in store.disputed}
+        return {**_tx(tx), "disputed": store.is_disputed(transaction_id)}
 
     @server.tool(description=(
         "Raise a dispute on a debit the customer doesn't recognise or disagrees with. reason is one of: "

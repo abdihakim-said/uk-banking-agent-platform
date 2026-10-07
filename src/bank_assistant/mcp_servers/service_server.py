@@ -27,7 +27,7 @@ def build_service_server(store: CoreBankingStore, token_secret: str) -> MCPServe
     @domain_errors
     def list_cards(context_token: str) -> dict[str, Any]:
         cid = customer_from(context_token, token_secret)
-        return {"cards": [{"card_ref": c.card_ref, "last4": c.last4, "status": c.status, "expiry": c.expiry}
+        return {"cards": [{"card_ref": c.card_ref, "last4": c.last4, "status": store.card_status(c), "expiry": c.expiry}
                           for c in store.cards.values() if c.customer_id == cid]}
 
     @server.tool(description=(
