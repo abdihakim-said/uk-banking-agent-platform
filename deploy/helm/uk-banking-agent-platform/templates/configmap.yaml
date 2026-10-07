@@ -1,0 +1,33 @@
+{{- $c := .Values.components -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bank.fullname" . }}-config
+  labels: {{- include "bank.labels" . | nindent 4 }}
+data:
+  BANK_ENVIRONMENT: {{ .Values.environment | quote }}
+  BANK_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  BANK_REDIS_URL: {{ include "bank.redisUrl" . | quote }}
+  BANK_AGENT_SERVICE_URL: {{ printf "http://%s:%v" (include "bank.component" (dict "root" . "name" $c.agent.name)) $c.agent.port | quote }}
+  BANK_MCP_ACCOUNTS_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.accountsMcp.name)) $c.accountsMcp.port | quote }}
+  BANK_MCP_TRANSACTIONS_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.transactionsMcp.name)) $c.transactionsMcp.port | quote }}
+  BANK_MCP_SERVICE_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.serviceMcp.name)) $c.serviceMcp.port | quote }}
+  BANK_LLM_ROUTE: {{ .Values.config.llmRoute | quote }}
+  BANK_ANTHROPIC_MODEL: {{ .Values.config.anthropicModel | quote }}
+  BANK_ANTHROPIC_EFFORT: {{ .Values.config.anthropicEffort | quote }}
+  BANK_PRIVATE_LLM_MODEL: {{ .Values.config.privateLlmModel | quote }}
+  {{- with .Values.config.privateLlmBaseUrl }}
+  BANK_PRIVATE_LLM_BASE_URL: {{ . | quote }}
+  {{- end }}
+  BANK_OIDC_ISSUER: {{ include "bank.oidcIssuer" . | quote }}
+  BANK_OIDC_AUDIENCE: {{ .Values.config.oidc.audience | quote }}
+  BANK_OIDC_JWKS_URL: {{ include "bank.oidcJwksUrl" . | quote }}
+  BANK_OIDC_REQUIRED_SCOPE: {{ .Values.config.oidc.requiredScope | quote }}
+  {{- with .Values.config.otlpEndpoint }}
+  BANK_OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  BANK_RATE_LIMIT_PER_MINUTE: {{ .Values.config.rateLimitPerMinute | quote }}
+  BANK_RATE_LIMIT_PER_IP_PER_MINUTE: {{ .Values.config.rateLimitPerIpPerMinute | quote }}
+  BANK_SESSION_BUDGET_USD: {{ .Values.config.sessionBudgetUsd | quote }}
+  BANK_CUSTOMER_DAILY_BUDGET_USD: {{ .Values.config.customerDailyBudgetUsd | quote }}
+  BANK_METRICS_PORT: "9464"

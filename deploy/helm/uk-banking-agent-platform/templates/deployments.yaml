@@ -1,0 +1,113 @@
+{{- $root := . -}}
+{{- range $key, $c := .Values.components }}
+{{- if $c.enabled }}
+{{- $name := include "bank.component" (dict "root" $root "name" $c.name) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "bank.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $c.name }}
+spec:
+  {{- if not (and $c.autoscaling $c.autoscaling.enabled) }}
+  replicas: {{ $c.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $c.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bank.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $c.name }}
+      annotations:
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+        {{- if eq $c.kind "web" }}
+        checksum/nginx: {{ include (print $root.Template.BasePath "/web-nginx.yaml") $root | sha256sum }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "bank.fullname" $root }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+        runAsUser: {{ ternary 101 10001 (eq $c.kind "web") }}
+        runAsGroup: {{ ternary 101 10001 (eq $c.kind "web") }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $c.name) | nindent 14 }}
+      containers:
+        - name: {{ $c.name }}
+          image: {{ include "bank.image" (dict "root" $root "component" $c) }}
+          imagePullPolicy: {{ ternary $root.Values.webImage.pullPolicy $root.Values.image.pullPolicy (eq $c.kind "web") }}
+          {{- with $c.command }}
+          command: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - {name: http, containerPort: {{ $c.port }}}
+            {{- if eq $c.kind "python" }}
+            - {name: metrics, containerPort: 9464}
+            {{- end }}
+          {{- if eq $c.kind "python" }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "bank.fullname" $root }}-config
+          env:
+            {{- range $c.secretEnv }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bank.secretName" $root }}
+                  key: {{ . }}
+                  optional: {{ eq . "ANTHROPIC_API_KEY" }}
+            {{- end }}
+            {{- range $k, $v := $c.env }}
+            - {name: {{ $k }}, value: {{ $v | quote }}}
+            {{- end }}
+          {{- end }}
+          readinessProbe:
+            httpGet: {path: {{ $c.probes.readiness }}, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: {{ $c.probes.liveness }}, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet: {path: {{ $c.probes.liveness }}, port: http}
+            periodSeconds: 3
+            failureThreshold: 40
+          lifecycle:
+            preStop:
+              exec: {command: ["sleep", "5"]}   # let endpoints drain before shutdown starts
+          resources: {{- toYaml $c.resources | nindent 12 }}
+          securityContext: {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if eq $c.kind "web" }}
+            - {name: nginx-conf, mountPath: /etc/nginx/conf.d, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        {{- if eq $c.kind "web" }}
+        - name: nginx-conf
+          configMap:
+            name: {{ include "bank.fullname" $root }}-web-nginx
+        {{- end }}
+{{- end }}
+{{- end }}

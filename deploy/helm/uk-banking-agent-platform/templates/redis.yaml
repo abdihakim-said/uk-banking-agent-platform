@@ -1,0 +1,44 @@
+{{- if .Values.redis.deploy }}
+{{- if eq .Values.environment "prod" }}
+{{- fail "redis.deploy is for local clusters and demos; use a managed Redis (config.redisUrl) in prod" }}
+{{- end }}
+{{- $name := include "bank.component" (dict "root" . "name" "redis") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "bank.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bank.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru"]
+          ports: [{name: redis, containerPort: 6379}]
+          readinessProbe: {tcpSocket: {port: redis}, periodSeconds: 5}
+          resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 192Mi}}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "bank.componentSelector" (dict "root" . "name" "redis") | nindent 4 }}
+  ports: [{name: redis, port: 6379, targetPort: redis}]
+{{- end }}

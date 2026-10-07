@@ -1,0 +1,32 @@
+# Production, deployed by Argo CD with manual sync (deploy/argocd/application-prod.yaml).
+# Promote by changing image.tag here in a pull request to the exact tag already running in dev.
+environment: prod
+image:
+  tag: "main"   # replace with a commit SHA tag when promoting
+webImage:
+  tag: "main"
+imagePullSecrets: [{name: ghcr-pull}]
+
+config:
+  llmRoute: anthropic,private
+  privateLlmBaseUrl: http://vllm.models.svc:8000
+  redisUrl: rediss://bank-assistant-redis.example.cache.windows.net:6380/0
+  otlpEndpoint: http://otel-collector.observability.svc:4317
+  oidc:
+    issuer: https://login.example-bank.co.uk
+    jwksUrl: https://login.example-bank.co.uk/.well-known/jwks.json
+externalSecrets:
+  enabled: true
+  secretStoreRef: {kind: ClusterSecretStore, name: platform-secrets}
+components:
+  demoIdp: {enabled: false}
+ingress:
+  enabled: true
+  host: assistant.example-bank.co.uk
+  annotations: {cert-manager.io/cluster-issuer: letsencrypt}
+networkPolicy:
+  externalRedis: {cidr: 10.20.0.0/24, port: 6380}
+monitoring:
+  serviceMonitor: {enabled: true, labels: {release: kube-prometheus-stack}}
+  prometheusRule: {enabled: true, labels: {release: kube-prometheus-stack}}
+  grafanaDashboard: {enabled: true}

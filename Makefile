@@ -1,4 +1,4 @@
-.PHONY: install test lint eval eval-claude demo keys token up down e2e
+.PHONY: install test lint eval eval-claude demo keys token up down e2e kind-up kind-test kind-down rules
 
 PY := .venv/bin/python
 
@@ -36,3 +36,18 @@ e2e:  ## browser test against the running stack (make up first)
 
 down:
 	docker compose down
+
+kind-up:  ## local Kubernetes cluster with the images loaded
+	kind create cluster --config deploy/kind/cluster.yaml --wait 120s || true
+	docker compose build
+	kind load docker-image uk-banking-agent-platform:local uk-banking-agent-platform-web:local --name bank-assistant
+
+kind-test:  ## deploy the Helm chart to kind, run browser e2e and NetworkPolicy checks
+	./deploy/kind/smoke-test.sh
+
+kind-down:
+	kind delete cluster --name bank-assistant
+
+rules:  ## regenerate SLO rules + dashboard, then validate and unit-test the rules
+	$(PY) scripts/gen_slo_rules.py && $(PY) scripts/gen_dashboard.py
+	docker run --rm -v "$$PWD/deploy:/deploy:ro" -w /deploy/prometheus/tests --entrypoint promtool prom/prometheus:v2.55.1 test rules slo_test.yaml

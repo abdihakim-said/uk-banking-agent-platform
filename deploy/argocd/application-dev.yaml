@@ -1,0 +1,24 @@
+# Dev: syncs automatically. CI writes the new image tag into values-dev.yaml on every merge to main.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bank-assistant-dev
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: bank-assistant
+  source:
+    repoURL: https://github.com/abdihakim-said/uk-banking-agent-platform.git
+    targetRevision: main
+    path: deploy/helm/uk-banking-agent-platform
+    helm:
+      valueFiles: [values.yaml, values-dev.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bank-assistant-dev
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+    retry:
+      limit: 5
+      backoff: {duration: 10s, factor: 2, maxDuration: 3m}

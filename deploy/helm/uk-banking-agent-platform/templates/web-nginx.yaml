@@ -1,0 +1,50 @@
+{{- if .Values.components.web.enabled }}
+{{- $c := .Values.components }}
+{{- $gateway := printf "%s:%v" (include "bank.component" (dict "root" . "name" $c.gateway.name)) $c.gateway.port }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bank.fullname" . }}-web-nginx
+  labels: {{- include "bank.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    # Rendered by Helm: same behaviour as web/nginx.conf, with cluster service names.
+    limit_req_zone $binary_remote_addr zone=per_ip:10m rate=5r/s;
+    server {
+        listen {{ $c.web.port }};
+        server_tokens off;
+        client_max_body_size 16k;
+        real_ip_header X-Forwarded-For;
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 172.16.0.0/12;
+        set_real_ip_from 192.168.0.0/16;
+
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+
+        location / {
+            root /usr/share/nginx/html;
+            try_files $uri /index.html;
+        }
+        location /api/ {
+            limit_req zone=per_ip burst=20 nodelay;
+            limit_req_status 429;
+            proxy_pass http://{{ $gateway }}/;
+            proxy_read_timeout 120s;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Request-Id $request_id;
+        }
+        {{- if $c.demoIdp.enabled }}
+        {{- $idp := printf "%s:%v" (include "bank.component" (dict "root" . "name" $c.demoIdp.name)) $c.demoIdp.port }}
+        location = /auth/personas { proxy_pass http://{{ $idp }}/personas; }
+        location = /auth/token {
+            limit_req zone=per_ip burst=5 nodelay;
+            limit_req_status 429;
+            proxy_pass http://{{ $idp }}/token;
+        }
+        {{- end }}
+        location = /healthz { access_log off; return 200 "ok\n"; }
+    }
+{{- end }}

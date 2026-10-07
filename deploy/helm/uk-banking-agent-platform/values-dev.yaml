@@ -1,0 +1,29 @@
+# Shared dev environment, deployed by Argo CD (deploy/argocd/application-dev.yaml).
+# image.tag is written by CI on every merge to main ("build once, promote by Git").
+environment: dev
+image:
+  tag: "main"
+webImage:
+  tag: "main"
+imagePullSecrets: [{name: ghcr-pull}]   # the GHCR packages are private
+
+config:
+  llmRoute: anthropic,rule_based
+  otlpEndpoint: http://otel-collector.observability.svc:4317
+externalSecrets:
+  enabled: true
+  secretStoreRef: {kind: ClusterSecretStore, name: platform-secrets}
+redis:
+  deploy: true
+components:
+  demoIdp: {enabled: true}
+  gateway: {autoscaling: {enabled: false}, replicas: 1}
+  agent: {autoscaling: {enabled: false}, replicas: 1}
+ingress:
+  enabled: true
+  host: bank-assistant.dev.example.com
+  annotations: {cert-manager.io/cluster-issuer: letsencrypt}
+monitoring:
+  serviceMonitor: {enabled: true, labels: {release: kube-prometheus-stack}}
+  prometheusRule: {enabled: true, labels: {release: kube-prometheus-stack}}
+  grafanaDashboard: {enabled: true}

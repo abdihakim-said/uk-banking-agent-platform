@@ -94,8 +94,9 @@ Full stack in containers (web app, demo IdP, gateway, agent service, 3 MCP serve
 make up                       # docker compose up --build
 open http://localhost:3080    # web app: sign in as Amina or Daniel and chat
 make e2e                      # browser tests (Playwright) against the running stack
-open http://localhost:16686   # traces
-open http://localhost:9090    # metrics and alerts
+open http://localhost:3300    # Grafana: SLOs, cost, tools, guardrails
+open http://localhost:16686   # traces (gateway → agent → model → MCP tool in one trace)
+open http://localhost:9090    # Prometheus: metrics and alerts
 
 # The API directly
 TOKEN=$(make -s token CUSTOMER=C001)
@@ -103,7 +104,10 @@ curl -s localhost:8080/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-typ
   -d '{"message": "What is my balance?"}'
 ```
 
-Ports 3080 and 8080 can be changed with `WEB_PORT` and `GATEWAY_PORT`.
+Ports 3080, 8080 and 3300 can be changed with `WEB_PORT`, `GATEWAY_PORT` and `GRAFANA_PORT`.
+
+On Kubernetes, use the Helm chart and Argo CD manifests. `make kind-up && make kind-test` deploys the chart to a local
+cluster and proves the NetworkPolicies. See [docs/kubernetes.md](docs/kubernetes.md).
 
 ### Web app
 
@@ -172,10 +176,12 @@ guards). It can't measure model quality, so run the live eval before changing pr
 
 | Signal | Where |
 |---|---|
-| Traces | `agent.turn` → `llm.*` (model, tokens, finish reason) → `mcp.<tool>` (server, dry run, error). No message text in spans. |
+| Traces | One trace per request across gateway → agent → `llm.*` → MCP server. W3C context goes over HTTP to the agent and in MCP `_meta` to the tool servers. No message text in spans; logs carry `trace_id`. |
 | Trajectory | Each turn returns its steps (`load → input_guard → confirm → coordinator → transactions_agent → output_guard → finalise`) with latency and decisions, and logs them as JSON. |
 | Metrics | `llm_cost_usd_total`, `llm_tokens_total`, `llm_fallbacks_total`, `llm_latency_seconds`, `mcp_tool_calls_total`, `guardrail_events_total`, `pii_redactions_total`, `action_confirmations_total`, `gateway_rate_limited_total`, `agent_turn_latency_seconds` |
-| Alerts | `deploy/alerts.yml`: fallback active, guard replacing replies, hourly spend, tool error rate |
+| SLOs | 99.5% availability and 95% of turns under 15s, with multi-window burn-rate alerts unit-tested by `promtool`. See [docs/slo.md](docs/slo.md). |
+| Dashboard | Grafana: SLO tiles and burn rate, latency, LLM cost and tokens, fallbacks, tools, guardrails, PII, confirmations |
+| Alerts | `deploy/helm/.../files/rules/`: SLO burn, service down, fallback active, guard replacing replies, spend, tool errors |
 
 ## Repository layout
 
@@ -194,7 +200,10 @@ src/bank_assistant/
 tests/            unit, integration and adversarial tests (scripted hostile model)
 e2e/              Playwright browser tests against the running compose stack
 web/              chat web app + nginx edge config
-deploy/           Prometheus config and alert rules
+deploy/helm/      Helm chart (all components, NetworkPolicies, HPA/PDB, ServiceMonitor, PrometheusRule, dashboard)
+deploy/argocd/    Argo CD project and dev/prod applications
+deploy/kind/      local cluster config and smoke test
+deploy/prometheus/ Prometheus config for compose, and rule unit tests
 ```
 
 ## Differences from the original brief
@@ -221,5 +230,7 @@ deploy/           Prometheus config and alert rules
 - **No human-handoff integration.** The handoff flag is returned to the caller; wiring it to a contact-centre queue is
   out of scope.
 - **Not load-tested.** MCP connections are opened per turn; a production build would pool them.
+- **Argo CD hasn't been run against a cluster.** The manifests are schema-validated, and the Helm chart is deployed and
+  tested on kind in CI.
 - **Prices in `observability/cost.py`** are list prices at the time of writing. Check them, and pass your own table
   for negotiated rates.

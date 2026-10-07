@@ -1,0 +1,34 @@
+# Argo CD project: limits what the bank-assistant applications may deploy, and where.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bank-assistant
+  namespace: argocd
+spec:
+  description: UK Banking Agent Platform
+  sourceRepos:
+    - https://github.com/abdihakim-said/uk-banking-agent-platform.git
+  destinations:
+    - {server: https://kubernetes.default.svc, namespace: bank-assistant-dev}
+    - {server: https://kubernetes.default.svc, namespace: bank-assistant-prod}
+  # The chart creates only namespaced resources; nothing cluster-wide.
+  clusterResourceWhitelist:
+    - {group: "", kind: Namespace}
+  namespaceResourceWhitelist:
+    - {group: "", kind: ConfigMap}
+    - {group: "", kind: Secret}
+    - {group: "", kind: Service}
+    - {group: "", kind: ServiceAccount}
+    - {group: apps, kind: Deployment}
+    - {group: autoscaling, kind: HorizontalPodAutoscaler}
+    - {group: policy, kind: PodDisruptionBudget}
+    - {group: networking.k8s.io, kind: NetworkPolicy}
+    - {group: networking.k8s.io, kind: Ingress}
+    - {group: monitoring.coreos.com, kind: ServiceMonitor}
+    - {group: monitoring.coreos.com, kind: PrometheusRule}
+    - {group: external-secrets.io, kind: ExternalSecret}
+  roles:
+    - name: prod-deployers
+      description: May sync production (manual sync only)
+      policies:
+        - p, proj:bank-assistant:prod-deployers, applications, sync, bank-assistant/bank-assistant-prod, allow

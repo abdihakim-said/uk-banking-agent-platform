@@ -1,0 +1,167 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . }}
+{{- $c := .Values.components }}
+{{- $np := .Values.networkPolicy }}
+# Default deny: every pod in this release starts with no ingress and no egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.fullname" . }}-default-deny
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+# Every pod may resolve DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.fullname" . }}-allow-dns
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.selectorLabels" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+---
+# Prometheus may scrape the metrics port; every app pod may export traces to the collector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.fullname" . }}-observability
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress{{ if .Values.config.otlpEndpoint }}, Egress{{ end }}]
+  ingress:
+    - from: [{namespaceSelector: {{ toJson $np.monitoringNamespaceSelector }}}]
+      ports: [{port: 9464, protocol: TCP}]
+  {{- if .Values.config.otlpEndpoint }}
+  egress:
+    - to: [{namespaceSelector: {{ toJson $np.otlpNamespaceSelector }}}]
+      ports: [{port: {{ $np.otlpPort }}, protocol: TCP}]
+  {{- end }}
+{{- if $c.web.enabled }}
+---
+# web: from the ingress controller; to the gateway and (demo) IdP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" . "name" $c.web.name) }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" $c.web.name) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{namespaceSelector: {{ toJson $np.ingressNamespaceSelector }}}]
+      ports: [{port: {{ $c.web.port }}, protocol: TCP}]
+  egress:
+    {{- include "bank.np.to" (dict "root" . "name" $c.gateway.name "port" $c.gateway.port) | nindent 4 }}
+    {{- if $c.demoIdp.enabled }}
+    {{- include "bank.np.to" (dict "root" . "name" $c.demoIdp.name "port" $c.demoIdp.port) | nindent 4 }}
+    {{- end }}
+{{- end }}
+---
+# gateway: only from the web app; to the agent, Redis, the IdP (JWKS) and HTTPS outside the cluster (a real IdP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" . "name" $c.gateway.name) }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" $c.gateway.name) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: {{- include "bank.np.from" (dict "root" . "name" $c.web.name) | nindent 8 }}
+      ports: [{port: {{ $c.gateway.port }}, protocol: TCP}]
+  egress:
+    {{- include "bank.np.to" (dict "root" . "name" $c.agent.name "port" $c.agent.port) | nindent 4 }}
+    {{- include "bank.np.redis" . | nindent 4 }}
+    {{- if $c.demoIdp.enabled }}
+    {{- include "bank.np.to" (dict "root" . "name" $c.demoIdp.name "port" $c.demoIdp.port) | nindent 4 }}
+    {{- else }}
+    - to: [{ipBlock: {cidr: {{ $np.externalEgress.cidr }}, except: {{ toJson $np.externalEgress.except }}}}]
+      ports: [{port: 443, protocol: TCP}]
+    {{- end }}
+---
+# agent: only from the gateway; to the three MCP servers, Redis and HTTPS outside the cluster (the LLM API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" . "name" $c.agent.name) }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" $c.agent.name) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: {{- include "bank.np.from" (dict "root" . "name" $c.gateway.name) | nindent 8 }}
+      ports: [{port: {{ $c.agent.port }}, protocol: TCP}]
+  egress:
+    {{- range $k := list "accountsMcp" "transactionsMcp" "serviceMcp" }}
+    {{- $m := index $c $k }}
+    {{- include "bank.np.to" (dict "root" $root "name" $m.name "port" $m.port) | nindent 4 }}
+    {{- end }}
+    {{- include "bank.np.redis" . | nindent 4 }}
+    - to: [{ipBlock: {cidr: {{ $np.externalEgress.cidr }}, except: {{ toJson $np.externalEgress.except }}}}]
+      ports: [{port: 443, protocol: TCP}]
+{{- range $k := list "accountsMcp" "transactionsMcp" "serviceMcp" }}
+{{- $m := index $c $k }}
+---
+# {{ $m.name }}: only from the agent; no egress beyond DNS (and traces).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" $root "name" $m.name) }}
+  labels: {{- include "bank.labels" $root | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $m.name) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from: {{- include "bank.np.from" (dict "root" $root "name" $c.agent.name) | nindent 8 }}
+      ports: [{port: {{ $m.port }}, protocol: TCP}]
+{{- end }}
+{{- if $c.demoIdp.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" . "name" $c.demoIdp.name) }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" $c.demoIdp.name) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "bank.np.from" (dict "root" . "name" $c.web.name) | nindent 8 }}
+        {{- include "bank.np.from" (dict "root" . "name" $c.gateway.name) | nindent 8 }}
+      ports: [{port: {{ $c.demoIdp.port }}, protocol: TCP}]
+{{- end }}
+{{- if .Values.redis.deploy }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "bank.component" (dict "root" . "name" "redis") }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" "redis") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- include "bank.np.from" (dict "root" . "name" $c.gateway.name) | nindent 8 }}
+        {{- include "bank.np.from" (dict "root" . "name" $c.agent.name) | nindent 8 }}
+      ports: [{port: 6379, protocol: TCP}]
+{{- end }}
+{{- end }}

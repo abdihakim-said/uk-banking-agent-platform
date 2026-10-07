@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+env:
+  IMAGE: ghcr.io/abdihakim-said/uk-banking-agent-platform
+  WEB_IMAGE: ghcr.io/abdihakim-said/uk-banking-agent-platform-web
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -59,6 +63,90 @@ jobs:
       - run: .venv/bin/python -m pytest e2e -q
       - if: failure()
         run: docker compose ps -a && docker compose logs --tail 80
+
+  kubernetes:
+    name: helm + kind (NetworkPolicy and e2e on a real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+      - name: Lint and validate the chart (kind, dev, prod values)
+        run: |
+          C=deploy/helm/uk-banking-agent-platform
+          helm lint $C -f $C/values-kind.yaml
+          for v in kind dev prod; do
+            helm template t $C -f $C/values-$v.yaml | kubeconform -strict -summary -kubernetes-version 1.30.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+          kubeconform -strict -summary \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            deploy/argocd/*.yaml
+      - name: Prod guardrails refuse unsafe settings
+        run: |
+          C=deploy/helm/uk-banking-agent-platform
+          ! helm template t $C -f $C/values-prod.yaml --set redis.deploy=true
+          ! helm template t $C -f $C/values-prod.yaml --set externalSecrets.enabled=false --set secrets.create=true \
+              --set secrets.contextTokenSecret=x --set secrets.internalServiceToken=y
+      - name: Prometheus rules (syntax and burn-rate alert unit tests)
+        run: |
+          docker run --rm -v "$PWD/deploy:/deploy:ro" --entrypoint promtool prom/prometheus:v2.55.1 \
+            check rules /deploy/helm/uk-banking-agent-platform/files/rules/slo.yaml /deploy/helm/uk-banking-agent-platform/files/rules/alerts.yaml
+          docker run --rm -v "$PWD/deploy:/deploy:ro" -w /deploy/prometheus/tests --entrypoint promtool \
+            prom/prometheus:v2.55.1 test rules slo_test.yaml
+      - uses: helm/kind-action@v1
+        with:
+          version: v0.27.0
+          cluster_name: bank-assistant
+          config: deploy/kind/cluster.yaml
+      - name: Build and load images
+        run: |
+          docker build -t uk-banking-agent-platform:local .
+          docker build -t uk-banking-agent-platform-web:local web
+          kind load docker-image uk-banking-agent-platform:local uk-banking-agent-platform-web:local --name bank-assistant
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev,e2e]"
+      - run: .venv/bin/python -m playwright install --with-deps chromium
+      - name: Deploy, browser e2e, NetworkPolicy checks
+        run: ./deploy/kind/smoke-test.sh
+      - if: failure()
+        run: |
+          kubectl -n bank get pods -o wide
+          kubectl -n bank describe pods | tail -80
+          kubectl -n bank logs -l app.kubernetes.io/instance=bank --all-containers --tail 40
+
+  publish:
+    name: publish images and promote to dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, docker, e2e, kubernetes]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # commit the new tag to values-dev.yaml
+      packages: write     # push to GHCR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Build once, tag with the commit
+        id: tag
+        run: |
+          TAG=sha-${GITHUB_SHA::7}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          docker build -t $IMAGE:$TAG -t $IMAGE:main .
+          docker build -t $WEB_IMAGE:$TAG -t $WEB_IMAGE:main web
+          docker push --all-tags $IMAGE
+          docker push --all-tags $WEB_IMAGE
+      - name: Promote to dev by Git (Argo CD syncs it)
+        run: |
+          TAG=${{ steps.tag.outputs.tag }}
+          sed -i -E "s/^  tag: \".*\"/  tag: \"$TAG\"/" deploy/helm/uk-banking-agent-platform/values-dev.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(deploy): promote $TAG to dev [skip ci]" && git push || echo "no change"
 
   live-eval:
     if: github.event_name == 'workflow_dispatch' && inputs.live_eval

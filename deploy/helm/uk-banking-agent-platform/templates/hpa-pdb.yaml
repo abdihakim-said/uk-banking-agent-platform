@@ -1,0 +1,38 @@
+{{- $root := . -}}
+{{- range $key, $c := .Values.components }}
+{{- if and $c.enabled $c.autoscaling $c.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "bank.component" (dict "root" $root "name" $c.name) }}
+  labels: {{- include "bank.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "bank.component" (dict "root" $root "name" $c.name) }}
+  minReplicas: {{ $c.autoscaling.minReplicas }}
+  maxReplicas: {{ $c.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ $c.autoscaling.targetCPUUtilizationPercentage }}}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # avoid flapping during bursty chat traffic
+{{- end }}
+{{- if and $c.enabled $c.pdb $c.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bank.component" (dict "root" $root "name" $c.name) }}
+  labels: {{- include "bank.labels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $c.pdb.minAvailable }}
+  selector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $c.name) | nindent 6 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,226 @@
+# Production-leaning defaults. See values-kind.yaml (local cluster), values-dev.yaml and values-prod.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# "prod" turns on the startup checks in config.py: strong secrets and a real IdP (JWKS URL) are required.
+environment: prod
+
+image:
+  repository: ghcr.io/abdihakim-said/uk-banking-agent-platform
+  tag: ""                      # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+webImage:
+  repository: ghcr.io/abdihakim-said/uk-banking-agent-platform-web
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+config:
+  logLevel: INFO
+  llmRoute: anthropic,private  # no offline rule_based fallback in prod: an outage shows "unavailable"
+  anthropicModel: claude-opus-5-5
+  anthropicEffort: medium
+  privateLlmBaseUrl: ""        # e.g. http://vllm.models.svc:8000
+  privateLlmModel: llama3.1:8b
+  redisUrl: ""                 # required unless redis.deploy is true (use rediss:// with AUTH for managed Redis)
+  otlpEndpoint: ""             # e.g. http://otel-collector.observability.svc:4317
+  rateLimitPerMinute: 20
+  rateLimitPerIpPerMinute: 60
+  sessionBudgetUsd: "0.50"
+  customerDailyBudgetUsd: "5.00"
+  oidc:
+    issuer: ""                 # defaults to the demo IdP when it's enabled
+    audience: uk-banking-assistant
+    jwksUrl: ""                # defaults to the demo IdP when it's enabled
+    requiredScope: banking.chat
+
+# Secret holding BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN and ANTHROPIC_API_KEY.
+# Use one of: an existing Secret, External Secrets (recommended), or create (local clusters only).
+secrets:
+  existingSecret: ""
+  create: false
+  contextTokenSecret: ""
+  internalServiceToken: ""
+  anthropicApiKey: ""
+
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: ""                   # e.g. azure-key-vault or aws-secrets-manager
+  remoteKeys:
+    contextTokenSecret: bank-assistant-context-token-secret
+    internalServiceToken: bank-assistant-internal-service-token
+    anthropicApiKey: bank-assistant-anthropic-api-key
+
+# In-cluster Redis with no persistence or auth. For local clusters and demos only.
+redis:
+  deploy: false
+  image: redis:7.4-alpine
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+components:
+  gateway:
+    enabled: true
+    name: gateway
+    kind: python
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
+    port: 8000
+    replicas: 2
+    command: ["uvicorn", "bank_assistant.gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
+              "--timeout-graceful-shutdown", "45", "--no-server-header"]
+    probes: {liveness: /healthz, readiness: /readyz}
+    terminationGracePeriodSeconds: 60
+    resources:
+      requests: {cpu: 100m, memory: 192Mi}
+      limits: {memory: 384Mi}
+    autoscaling: {enabled: true, minReplicas: 2, maxReplicas: 6, targetCPUUtilizationPercentage: 70}
+    pdb: {enabled: true, minAvailable: 1}
+  agent:
+    enabled: true
+    name: agent
+    kind: python
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, ANTHROPIC_API_KEY]  # only the agent gets the model API key
+    port: 8001
+    replicas: 2
+    command: ["uvicorn", "bank_assistant.services.agent_api:create_app", "--factory", "--host", "0.0.0.0", "--port",
+              "8001", "--timeout-graceful-shutdown", "75", "--no-server-header"]
+    probes: {liveness: /healthz, readiness: /readyz}
+    terminationGracePeriodSeconds: 90   # LLM tool loops can take tens of seconds; let them finish
+    resources:
+      requests: {cpu: 200m, memory: 384Mi}
+      limits: {memory: 768Mi}
+    autoscaling: {enabled: true, minReplicas: 2, maxReplicas: 10, targetCPUUtilizationPercentage: 70}
+    pdb: {enabled: true, minAvailable: 1}
+  accountsMcp:
+    enabled: true
+    name: accounts-mcp
+    kind: python
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
+    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9101"}
+    port: 9101
+    replicas: 2
+    command: ["python", "-m", "bank_assistant.mcp_servers.accounts_server"]
+    probes: {liveness: /healthz, readiness: /healthz}
+    terminationGracePeriodSeconds: 30
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    autoscaling: {enabled: false}
+    pdb: {enabled: true, minAvailable: 1}
+  transactionsMcp:
+    enabled: true
+    name: transactions-mcp
+    kind: python
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
+    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9102"}
+    port: 9102
+    replicas: 2
+    command: ["python", "-m", "bank_assistant.mcp_servers.transactions_server"]
+    probes: {liveness: /healthz, readiness: /healthz}
+    terminationGracePeriodSeconds: 30
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    autoscaling: {enabled: false}
+    pdb: {enabled: true, minAvailable: 1}
+  serviceMcp:
+    enabled: true
+    name: service-mcp
+    kind: python
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
+    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9103"}
+    port: 9103
+    replicas: 2
+    command: ["python", "-m", "bank_assistant.mcp_servers.service_server"]
+    probes: {liveness: /healthz, readiness: /healthz}
+    terminationGracePeriodSeconds: 30
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    autoscaling: {enabled: false}
+    pdb: {enabled: true, minAvailable: 1}
+  # Demo-only token issuer. The app refuses to start it when environment is "prod".
+  demoIdp:
+    enabled: false
+    name: demo-idp
+    kind: python
+    secretEnv: []
+    env: {BANK_DEMO_IDP_ENABLED: "true"}
+    port: 8000
+    replicas: 1
+    command: ["uvicorn", "bank_assistant.demo_idp.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    probes: {liveness: /healthz, readiness: /healthz}
+    terminationGracePeriodSeconds: 10
+    resources:
+      requests: {cpu: 20m, memory: 96Mi}
+      limits: {memory: 192Mi}
+    autoscaling: {enabled: false}
+    pdb: {enabled: false}
+  web:
+    enabled: true
+    name: web
+    kind: web
+    port: 8080
+    replicas: 2
+    probes: {liveness: /healthz, readiness: /healthz}
+    terminationGracePeriodSeconds: 20
+    resources:
+      requests: {cpu: 20m, memory: 32Mi}
+      limits: {memory: 64Mi}
+    autoscaling: {enabled: false}
+    pdb: {enabled: true, minAvailable: 1}
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: ""
+
+networkPolicy:
+  enabled: true
+  # Where traffic to the web app comes from (the ingress controller's namespace).
+  ingressNamespaceSelector:
+    matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  # Prometheus, allowed to scrape the metrics port.
+  monitoringNamespaceSelector:
+    matchLabels: {kubernetes.io/metadata.name: monitoring}
+  # OTLP collector, allowed as an egress target when config.otlpEndpoint is set.
+  otlpNamespaceSelector:
+    matchLabels: {kubernetes.io/metadata.name: observability}
+  otlpPort: 4317
+  # HTTPS egress outside the cluster: the agent (LLM API) and the gateway (IdP JWKS).
+  # NetworkPolicy can't filter by hostname; restrict further with an egress gateway or FQDN policies (e.g. Cilium).
+  externalEgress:
+    cidr: 0.0.0.0/0
+    except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+  # Managed Redis outside the cluster (when redis.deploy is false).
+  externalRedis:
+    cidr: ""
+    port: 6379
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}                 # e.g. {release: kube-prometheus-stack}
+  prometheusRule:
+    enabled: false
+    labels: {}
+  grafanaDashboard:
+    enabled: false
+    labels: {grafana_dashboard: "1"}   # picked up by the Grafana sidecar in kube-prometheus-stack

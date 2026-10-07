@@ -1,0 +1,28 @@
+# Local kind cluster: locally built images, in-cluster Redis, demo IdP, offline model fallback. See docs/kubernetes.md.
+environment: dev
+image: {repository: uk-banking-agent-platform, tag: local, pullPolicy: Never}
+webImage: {repository: uk-banking-agent-platform-web, tag: local, pullPolicy: Never}
+
+config:
+  llmRoute: anthropic,rule_based   # without an API key the agent falls back to the offline model
+  rateLimitPerMinute: 120          # tests run many turns per persona from one IP; keep the prod default (20) elsewhere
+  rateLimitPerIpPerMinute: 600
+secrets:
+  create: true
+  contextTokenSecret: kind-only-context-secret-0123456789abcdef
+  internalServiceToken: kind-only-service-token-0123456789abcdef
+redis:
+  deploy: true
+
+components:
+  gateway: {replicas: 1, autoscaling: {enabled: false}, pdb: {enabled: false}}
+  agent: {replicas: 1, autoscaling: {enabled: false}, pdb: {enabled: false}}
+  accountsMcp: {replicas: 1, pdb: {enabled: false}}
+  transactionsMcp: {replicas: 1, pdb: {enabled: false}}
+  serviceMcp: {replicas: 1, pdb: {enabled: false}}
+  demoIdp: {enabled: true}
+  web: {replicas: 1, pdb: {enabled: false}}
+
+networkPolicy:
+  enabled: true
+  # No ingress controller on kind: reach the web app with kubectl port-forward (which goes through the kubelet).

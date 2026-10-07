@@ -1,0 +1,25 @@
+# Prod: no automated sync. Promote by a reviewed PR that changes image.tag in values-prod.yaml to a tag already
+# proven in dev, then sync by hand (only the prod-deployers role may).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bank-assistant-prod
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: bank-assistant
+  source:
+    repoURL: https://github.com/abdihakim-said/uk-banking-agent-platform.git
+    targetRevision: main
+    path: deploy/helm/uk-banking-agent-platform
+    helm:
+      valueFiles: [values.yaml, values-prod.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bank-assistant-prod
+  syncPolicy:
+    syncOptions: [CreateNamespace=true, ServerSideApply=true, PruneLast=true]
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]   # owned by the HPA

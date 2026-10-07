@@ -1,0 +1,21 @@
+{{- $root := . -}}
+{{- range $key, $c := .Values.components }}
+{{- if $c.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bank.component" (dict "root" $root "name" $c.name) }}
+  labels:
+    {{- include "bank.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $c.name }}
+spec:
+  type: ClusterIP
+  selector: {{- include "bank.componentSelector" (dict "root" $root "name" $c.name) | nindent 4 }}
+  ports:
+    - {name: http, port: {{ $c.port }}, targetPort: http}
+    {{- if eq $c.kind "python" }}
+    - {name: metrics, port: 9464, targetPort: metrics}
+    {{- end }}
+{{- end }}
+{{- end }}

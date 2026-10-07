@@ -1,0 +1,50 @@
+{{- $root := . }}
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+{{- range $key, $c := .Values.components }}
+{{- if and $c.enabled (eq $c.kind "python") }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bank.component" (dict "root" $root "name" $c.name) }}
+  labels:
+    {{- include "bank.labels" $root | nindent 4 }}
+    {{- with $root.Values.monitoring.serviceMonitor.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+spec:
+  selector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" $root "name" $c.name) | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ $root.Values.monitoring.serviceMonitor.interval }}
+      relabelings:
+        - {targetLabel: job, replacement: {{ $c.name | quote }}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.monitoring.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "bank.fullname" . }}
+  labels:
+    {{- include "bank.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}{{ toYaml . | nindent 4 }}{{ end }}
+spec:
+  groups:
+    {{- range $path, $_ := .Files.Glob "files/rules/*.yaml" }}
+    {{- (fromYaml ($root.Files.Get $path)).groups | toYaml | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if .Values.monitoring.grafanaDashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bank.fullname" . }}-dashboard
+  labels:
+    {{- include "bank.labels" . | nindent 4 }}
+    {{- toYaml .Values.monitoring.grafanaDashboard.labels | nindent 4 }}
+data:
+  bank-assistant.json: {{ .Files.Get "files/dashboards/bank-assistant.json" | toJson }}
+{{- end }}
