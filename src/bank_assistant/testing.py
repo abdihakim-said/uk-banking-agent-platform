@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 
 from bank_assistant.agents.graph import AgentDeps, AgentEngine
 from bank_assistant.config import Settings
+from bank_assistant.core.audit import AuditLog
 from bank_assistant.core.bank_data import CoreBankingStore
 from bank_assistant.core.session_store import SessionStore
 from bank_assistant.gateway.app import create_app as create_gateway
@@ -35,6 +36,7 @@ from bank_assistant.services.agent_api import create_app as create_agent_app
 ISSUER = "https://idp.test"
 AUDIENCE = "uk-banking-assistant"
 SECRET = "test-secret-0123456789abcdef0123456789"
+AUDIT_KEY = "test-audit-key-0123456789abcdef0123"
 NAMES = {"C001": ("Amina", "Yusuf"), "C002": ("Daniel", "Okafor")}
 
 
@@ -107,6 +109,7 @@ async def build_stack(providers: Sequence[LLMProvider] | None = None, today: dat
                      "service": build_service_server(bank, SECRET)},
         context_secret=SECRET,
         today=lambda: bank.today,
+        audit=AuditLog(redis, AUDIT_KEY, "agent"),
     ))
     agent_app = create_agent_app(engine=engine, settings=settings)
     agent_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_app), base_url="http://agent")
@@ -114,6 +117,7 @@ async def build_stack(providers: Sequence[LLMProvider] | None = None, today: dat
     public_pem = key.public_key().public_bytes(serialization.Encoding.PEM,
                                                serialization.PublicFormat.SubjectPublicKeyInfo).decode()
     gateway = create_gateway(settings=settings, redis=redis, agent_client=agent_client, redactor=Redactor(),
+                             audit=AuditLog(redis, AUDIT_KEY, "gateway"),
                              verifier=JwtVerifier(ISSUER, AUDIENCE, "banking.chat", public_key_pem=public_pem))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway), base_url="http://gateway") as client:
         yield Stack(client=client, redis=redis, bank=bank, providers=recording, private_key=key, engine=engine)

@@ -24,6 +24,16 @@ data:
         add_header Referrer-Policy no-referrer always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 
+        {{- if .Values.tls.enabled }}
+        # Mutual TLS to the gateway and IdP: verify them against the internal CA and present our certificate.
+        proxy_ssl_certificate /certs/tls.crt;
+        proxy_ssl_certificate_key /certs/tls.key;
+        proxy_ssl_trusted_certificate /certs/ca.crt;
+        proxy_ssl_verify on;
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        {{- end }}
+
         location / {
             root /usr/share/nginx/html;
             try_files $uri /index.html;
@@ -31,18 +41,18 @@ data:
         location /api/ {
             limit_req zone=per_ip burst=20 nodelay;
             limit_req_status 429;
-            proxy_pass http://{{ $gateway }}/;
+            proxy_pass {{ include "bank.scheme" . }}://{{ $gateway }}/;
             proxy_read_timeout 120s;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Request-Id $request_id;
         }
         {{- if $c.demoIdp.enabled }}
         {{- $idp := printf "%s:%v" (include "bank.component" (dict "root" . "name" $c.demoIdp.name)) $c.demoIdp.port }}
-        location = /auth/personas { proxy_pass http://{{ $idp }}/personas; }
+        location = /auth/personas { proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/personas; }
         location = /auth/token {
             limit_req zone=per_ip burst=5 nodelay;
             limit_req_status 429;
-            proxy_pass http://{{ $idp }}/token;
+            proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/token;
         }
         {{- end }}
         location = /healthz { access_log off; return 200 "ok\n"; }

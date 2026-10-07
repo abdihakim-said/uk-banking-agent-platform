@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import operator
+import ssl
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from bank_assistant.agents.domain import run_domain_agent
 from bank_assistant.agents.policy import PendingAction, classify_reply, result_message
 from bank_assistant.agents.prompts import COORDINATOR, COORDINATOR_SCHEMA, REPLIES, domain_prompt
 from bank_assistant.agents.toolbox import McpToolbox
+from bank_assistant.core.audit import AuditLog
 from bank_assistant.core.context_token import issue_context_token
 from bank_assistant.core.session_store import SessionStore
 from bank_assistant.llm.router import AllProvidersUnavailableError, LLMRouter
@@ -59,6 +61,8 @@ class AgentDeps:
     context_secret: str
     context_ttl_seconds: int = 120
     today: Callable[[], date] = field(default=lambda: datetime.now(UTC).date())
+    tls_context: ssl.SSLContext | None = None
+    audit: AuditLog | None = None
 
 
 class TurnState(TypedDict, total=False):
@@ -110,6 +114,11 @@ def _history_messages(history: list[dict[str, str]]) -> list[Message]:
 def build_graph(deps: AgentDeps) -> Any:
     cost_box: dict[str, Decimal] = {}
 
+    async def audit(event: str, state: TurnState, outcome: str, **details: Any) -> None:
+        if deps.audit is not None:
+            await deps.audit.record(event, outcome=outcome, actor=state["customer_id"], session_id=state["session_id"],
+                                    **details)
+
     def _budget_hooks(state: TurnState) -> tuple[Callable[[], Awaitable[None]],
                                                  Callable[[list[Usage]], Awaitable[None]]]:
         sid, cid = state["session_id"], state["customer_id"]
@@ -140,6 +149,7 @@ def build_graph(deps: AgentDeps) -> Any:
         if verdict.verdict is Verdict.ALLOW:
             return {"trajectory": _step("input_guard", t, verdict="allow")}
         metrics.GUARDRAIL_EVENTS.labels("input", verdict.verdict.value).inc()
+        await audit("input_guard", state, verdict.verdict.value)
         reply_key = {Verdict.BLOCK_INJECTION: "injection", Verdict.REGULATED_ADVICE: "regulated_advice",
                      Verdict.HUMAN_HANDOFF: "human_handoff"}[verdict.verdict]
         return {"reply": REPLIES[reply_key], "route": reply_key, "route_method": "input_guard",
@@ -156,23 +166,30 @@ def build_graph(deps: AgentDeps) -> Any:
         await deps.store.clear_pending(state["session_id"])
         if pending.expired():
             metrics.CONFIRMATIONS.labels(pending.tool, "expired").inc()
+            await audit("action_expired", state, "expired", tool=pending.tool, pending_id=pending.id)
             if answer == "yes":
                 return {"reply": REPLIES["expired"], "route": pending.domain, "route_method": "confirmation",
                         "outcome": "expired", "trajectory": _step("confirm", t, decision="expired")}
             return {"trajectory": _step("confirm", t, decision="expired_ignored")}
         if answer == "no":
             metrics.CONFIRMATIONS.labels(pending.tool, "cancelled").inc()
+            await audit("action_cancelled", state, "cancelled", tool=pending.tool, pending_id=pending.id)
             return {"reply": REPLIES["cancelled"], "route": pending.domain, "route_method": "confirmation",
                     "outcome": "cancelled", "trajectory": _step("confirm", t, decision="cancelled")}
         if answer == "other":
             metrics.CONFIRMATIONS.labels(pending.tool, "abandoned").inc()
+            await audit("action_abandoned", state, "abandoned", tool=pending.tool, pending_id=pending.id)
             return {"trajectory": _step("confirm", t, decision="abandoned")}
 
         token = issue_context_token(state["customer_id"], state["session_id"], deps.context_secret,
                                     deps.context_ttl_seconds)
-        async with McpToolbox(pending.domain, deps.mcp_targets[pending.domain]) as toolbox:
+        target = deps.mcp_targets[pending.domain]
+        async with McpToolbox(pending.domain, target, tls_context=deps.tls_context) as toolbox:
             outcome = await toolbox.call(pending.tool, pending.arguments, token, dry_run=False)
         metrics.CONFIRMATIONS.labels(pending.tool, "error" if outcome.is_error else "executed").inc()
+        await audit("action_executed", state, "error" if outcome.is_error else "executed", tool=pending.tool,
+                    pending_id=pending.id, reference=(outcome.data or {}).get("reference"),
+                    fields=sorted((pending.arguments or {}).keys()))
         reply = (f"Sorry, I couldn't complete that: {outcome.text}" if outcome.is_error or outcome.data is None
                  else result_message(outcome.data))
         return {"reply": reply, "route": pending.domain, "route_method": "confirmation",
@@ -211,7 +228,7 @@ def build_graph(deps: AgentDeps) -> Any:
             before, after = _budget_hooks(state)
             token = issue_context_token(state["customer_id"], state["session_id"], deps.context_secret,
                                         deps.context_ttl_seconds)
-            async with McpToolbox(domain, deps.mcp_targets[domain]) as toolbox:
+            async with McpToolbox(domain, deps.mcp_targets[domain], tls_context=deps.tls_context) as toolbox:
                 result = await run_domain_agent(
                     domain=domain, system=domain_prompt(domain, deps.today()),
                     messages=[*_history_messages(state["history"]), UserMessage(state["user_text"])],
@@ -220,6 +237,8 @@ def build_graph(deps: AgentDeps) -> Any:
                     before_model_call=before, after_model_call=after)
             if result.pending is not None:
                 await deps.store.set_pending(state["session_id"], result.pending.to_dict())
+                await audit("action_proposed", state, "awaiting_confirmation", tool=result.pending.tool,
+                            action=result.pending.action, pending_id=result.pending.id)
             return {"reply": result.reply, "outcome": result.outcome, "provider": result.provider,
                     "tool_payloads": result.tool_payloads, "tool_calls": result.tool_calls,
                     "awaiting_confirmation": result.pending is not None,
@@ -243,6 +262,7 @@ def build_graph(deps: AgentDeps) -> Any:
         for f in findings:
             metrics.GUARDRAIL_EVENTS.labels(f.guard, "replaced").inc()
         log.warning("output_guard_replaced_reply", guards=[f.guard for f in findings])
+        await audit("output_guard", state, "replaced", guards=[f.guard for f in findings])
         key = "ungrounded" if any(f.guard == "groundedness" for f in findings) else "regulated_advice"
         return {"reply": REPLIES[key], "guard_findings": [f.guard for f in findings],
                 "trajectory": _step("output_guard", t, findings=[f.guard for f in findings])}
@@ -304,6 +324,9 @@ class AgentEngine:
             except BudgetExceededError as exc:
                 log.warning("turn_budget_exceeded", scope=exc.scope)
                 metrics.AGENT_TURNS.labels("budget_exceeded").inc()
+                if self.deps.audit is not None:
+                    await self.deps.audit.record("budget_exceeded", outcome="denied", actor=customer_id,
+                                                 session_id=session_id, scope=exc.scope)
                 return TurnResult(REPLIES["budget"], "none", "budget_exceeded", False, False, None, Decimal("0"),
                                   [{"node": "budget", "scope": exc.scope}], [])
             except AllProvidersUnavailableError:

@@ -16,14 +16,15 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from redis.asyncio import Redis
 
 from bank_assistant.agents.graph import AgentDeps, AgentEngine
 from bank_assistant.config import Settings, get_settings
+from bank_assistant.core.audit import AuditLog
+from bank_assistant.core.redis_client import async_redis
 from bank_assistant.core.session_store import SessionStore
+from bank_assistant.core.tls import client_context
 from bank_assistant.llm.factory import build_router
 from bank_assistant.logging import configure_logging
-from bank_assistant.observability import metrics
 from bank_assistant.observability.cost import CostTracker
 from bank_assistant.observability.tracing import setup_tracing
 from bank_assistant.security.redactor import Redactor, default_name_detector
@@ -56,8 +57,7 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
         if state["engine"] is None:
             configure_logging(settings.log_level, "agent-service")
             setup_tracing("agent-service", settings.otel_exporter_otlp_endpoint)
-            metrics.serve_metrics(settings.metrics_port)
-            redis = Redis.from_url(settings.redis_url)
+            redis = async_redis(settings)
             state["engine"] = AgentEngine(AgentDeps(
                 router=build_router(settings),
                 store=SessionStore(redis, settings.session_ttl_seconds, settings.history_max_messages),
@@ -68,6 +68,8 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
                              "service": settings.mcp_service_url},
                 context_secret=settings.context_token_secret.get_secret_value(),
                 context_ttl_seconds=settings.context_token_ttl_seconds,
+                tls_context=client_context(settings),
+                audit=AuditLog(redis, settings.audit_hmac_key.get_secret_value(), "agent"),
             ))
         yield
 
@@ -101,7 +103,7 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
             checks["redis"] = "ok"
         except Exception as exc:
             checks["redis"] = type(exc).__name__
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=2.0, verify=engine.deps.tls_context or True) as client:
             for domain, target in engine.deps.mcp_targets.items():
                 if not isinstance(target, str):
                     checks[f"mcp_{domain}"] = "ok"  # in-process server (tests)

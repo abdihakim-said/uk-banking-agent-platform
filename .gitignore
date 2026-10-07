@@ -7,3 +7,5 @@ __pycache__/
 .env
 .dev-keys/
 eval-report*.json
+.dev-certs/
+.dev-certs-kind/

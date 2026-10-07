@@ -43,14 +43,20 @@ app.kubernetes.io/component: {{ .name }}
 
 {{- define "bank.redisUrl" -}}
 {{- if .Values.redis.deploy -}}
-{{- printf "redis://%s:6379/0" (include "bank.component" (dict "root" . "name" "redis")) -}}
+{{- printf "%s://%s:6379/0" (ternary "rediss" "redis" .Values.tls.enabled) (include "bank.component" (dict "root" . "name" "redis")) -}}
 {{- else -}}
 {{- required "config.redisUrl is required when redis.deploy is false" .Values.config.redisUrl -}}
 {{- end -}}
 {{- end -}}
 
+{{- define "bank.scheme" -}}{{ ternary "https" "http" .Values.tls.enabled }}{{- end -}}
+
+{{- define "bank.tlsSecret" -}}
+{{- printf "%s-tls" (include "bank.component" .) -}}
+{{- end -}}
+
 {{- define "bank.demoIdpUrl" -}}
-{{- printf "http://%s:%v" (include "bank.component" (dict "root" . "name" .Values.components.demoIdp.name)) .Values.components.demoIdp.port -}}
+{{- printf "%s://%s:%v" (include "bank.scheme" .) (include "bank.component" (dict "root" . "name" .Values.components.demoIdp.name)) .Values.components.demoIdp.port -}}
 {{- end -}}
 
 {{- define "bank.oidcIssuer" -}}

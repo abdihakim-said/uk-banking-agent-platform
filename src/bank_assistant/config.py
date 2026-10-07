@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     environment: Literal["dev", "test", "prod"] = "dev"
     log_level: str = "INFO"
 
-    # Storage
+    # Storage. In deployments: rediss:// (TLS) plus a password; Redis also requires our client certificate.
     redis_url: str = "redis://localhost:6379/0"
+    redis_password: SecretStr | None = None
+    redis_tls_ca_file: str | None = None  # defaults to tls_ca_file
     session_ttl_seconds: int = 1800
     history_max_messages: int = 20
 
@@ -29,6 +31,13 @@ class Settings(BaseSettings):
     context_token_secret: SecretStr = SecretStr(_DEV_SECRET)
     internal_service_token: SecretStr = SecretStr(_DEV_SECRET)
     context_token_ttl_seconds: int = 120
+    audit_hmac_key: SecretStr = SecretStr(_DEV_SECRET)  # signs the audit chain; without it entries can't be forged
+
+    # Mutual TLS between services (see core/tls.py). Off for in-process tests; on in compose and Kubernetes.
+    tls_enabled: bool = False
+    tls_cert_file: str = "/certs/tls.crt"
+    tls_key_file: str = "/certs/tls.key"
+    tls_ca_file: str = "/certs/ca.crt"
 
     # Topology
     agent_service_url: str = "http://localhost:8001"
@@ -75,12 +84,16 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _no_dev_secrets_in_prod(self) -> Settings:
         if self.environment == "prod":
-            for name in ("context_token_secret", "internal_service_token"):
+            for name in ("context_token_secret", "internal_service_token", "audit_hmac_key"):
                 value: SecretStr = getattr(self, name)
                 if value.get_secret_value() == _DEV_SECRET or len(value.get_secret_value()) < 32:
                     raise ValueError(f"BANK_{name.upper()} must be set to a strong secret in prod")
             if self.oidc_jwks_url is None:
                 raise ValueError("BANK_OIDC_JWKS_URL is required in prod; the dev key file is for local use only")
+            if not self.tls_enabled:
+                raise ValueError("BANK_TLS_ENABLED must be true in prod: every internal hop uses mutual TLS")
+            if not self.redis_url.startswith("rediss://") or self.redis_password is None:
+                raise ValueError("prod Redis must use TLS (rediss://) and a password (BANK_REDIS_PASSWORD)")
         return self
 
 

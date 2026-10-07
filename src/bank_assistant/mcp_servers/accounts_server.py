@@ -12,9 +12,6 @@ from bank_assistant.mcp_servers.common import (
     customer_from,
     domain_errors,
     request_result,
-    secret,
-    serve,
-    shared_store,
 )
 
 
@@ -69,7 +66,9 @@ def build_accounts_server(store: CoreBankingStore, token_secret: str) -> MCPServ
 
 
 def main() -> None:
-    serve(build_accounts_server(shared_store(), secret()))
+    from bank_assistant.serve import run
+
+    run("accounts-mcp")
 
 
 if __name__ == "__main__":

@@ -21,17 +21,54 @@ spec:
         app.kubernetes.io/component: redis
     spec:
       automountServiceAccountToken: false
-      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, seccompProfile: {type: RuntimeDefault}}
+      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, fsGroup: 999,
+                        seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
-          args: ["--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ include "bank.secretName" . }}, key: BANK_REDIS_PASSWORD}}
+          args:
+            {{- if .Values.tls.enabled }}
+            - --port
+            - "0"
+            - --tls-port
+            - "6379"
+            - --tls-cert-file
+            - /certs/tls.crt
+            - --tls-key-file
+            - /certs/tls.key
+            - --tls-ca-cert-file
+            - /certs/ca.crt
+            - --tls-auth-clients
+            - "yes"
+            {{- end }}
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+            - --maxmemory
+            - 128mb
+            - --maxmemory-policy
+            - volatile-lru
           ports: [{name: redis, containerPort: 6379}]
           readinessProbe: {tcpSocket: {port: redis}, periodSeconds: 5}
           resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 192Mi}}
           securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
-          volumeMounts: [{name: data, mountPath: /data}]
-      volumes: [{name: data, emptyDir: {}}]
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            {{- if .Values.tls.enabled }}
+            - {name: certs, mountPath: /certs, readOnly: true}
+            {{- end }}
+      volumes:
+        - {name: data, emptyDir: {}}
+        {{- if .Values.tls.enabled }}
+        - name: certs
+          secret: {secretName: {{ include "bank.tlsSecret" (dict "root" . "name" "redis") }}, defaultMode: 0440}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

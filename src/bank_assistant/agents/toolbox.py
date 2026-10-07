@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import copy
 import json
+import ssl
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
+import httpx2  # the HTTP client package the MCP SDK 2.x transport is built on
 from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 from opentelemetry import trace
 
@@ -37,10 +40,12 @@ class ToolNotAllowedError(Exception):
 
 
 class McpToolbox:
-    def __init__(self, domain: str, target: str | MCPServer, timeout_seconds: float = 15.0) -> None:
+    def __init__(self, domain: str, target: str | MCPServer, timeout_seconds: float = 15.0,
+                 tls_context: ssl.SSLContext | None = None) -> None:
         self.domain = domain
         self.target = target
         self.timeout = timeout_seconds
+        self.tls_context = tls_context
         self._stack: AsyncExitStack | None = None
         self._client: Client | None = None
         self._specs: dict[str, ToolSpec] = {}
@@ -48,7 +53,13 @@ class McpToolbox:
 
     async def __aenter__(self) -> McpToolbox:
         self._stack = AsyncExitStack()
-        self._client = await self._stack.enter_async_context(Client(self.target, read_timeout_seconds=self.timeout))
+        target: Any = self.target
+        if isinstance(self.target, str) and self.tls_context is not None:
+            # mTLS: verify the MCP server against the internal CA and present this service's certificate.
+            http = await self._stack.enter_async_context(
+                httpx2.AsyncClient(verify=self.tls_context, timeout=self.timeout))
+            target = streamable_http_client(self.target, http_client=http)
+        self._client = await self._stack.enter_async_context(Client(target, read_timeout_seconds=self.timeout))
         listed = await self._client.list_tools()
         for tool in listed.tools:
             schema = copy.deepcopy(tool.input_schema)

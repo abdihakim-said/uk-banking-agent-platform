@@ -29,6 +29,8 @@ dev = ["fakeredis>=2.26", "mypy>=1.11", "pytest>=8", "pytest-asyncio>=0.24", "ru
 
 [project.scripts]
 bank-eval = "bank_assistant.evals.run:main"
+bank-audit = "bank_assistant.core.audit:main"
+bank-serve = "bank_assistant.serve:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -56,7 +58,8 @@ ignore = ["S101", "S105", "S106", "RUF012"]
 "tests/**" = ["S", "B011"]
 "e2e/**" = ["S"]
 "scripts/**" = ["S"]
-"scripts/gen_*.py" = ["S", "E501"]  # long PromQL and dashboard config strings
+"scripts/gen_*.py" = ["S", "E501"]
+"scripts/dev_certs.py" = ["S", "E501"]  # long PromQL and dashboard config strings
 "src/bank_assistant/security/redactor.py" = ["RUF001"]
 
 [tool.mypy]

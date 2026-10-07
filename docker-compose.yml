@@ -1,7 +1,7 @@
-# Local stack. Published: web app (3080), gateway API (8080), Grafana (3300), Jaeger (16686), Prometheus (9090);
-# the agent service, MCP servers and Redis are reachable only on the internal network.
+# Local stack. Published: web app (3080), Grafana (3300), Jaeger (16686), Prometheus (9090). Everything else is on the
+# internal network only, and every internal hop uses mutual TLS with certificates from scripts/dev_certs.py.
 #
-#   docker compose up --build              # then open http://localhost:3080
+#   make up                                 # generates dev certificates, then docker compose up --build
 #   docker compose --profile private-llm up # also start Ollama as a self-hosted fallback
 
 x-app: &app
@@ -15,30 +15,33 @@ x-app: &app
   networks: [internal]
   environment: &env
     BANK_ENVIRONMENT: dev
-    BANK_OIDC_ISSUER: http://demo-idp:8000
-    BANK_REDIS_URL: redis://redis:6379/0
+    BANK_TLS_ENABLED: "true"
+    BANK_OIDC_ISSUER: https://demo-idp:8000
+    BANK_REDIS_URL: rediss://redis:6379/0
+    BANK_REDIS_PASSWORD: ${BANK_REDIS_PASSWORD:-dev-only-redis-password-change-me}
     BANK_CONTEXT_TOKEN_SECRET: ${BANK_CONTEXT_TOKEN_SECRET:-dev-only-change-me-dev-only-change-me}
     BANK_INTERNAL_SERVICE_TOKEN: ${BANK_INTERNAL_SERVICE_TOKEN:-dev-only-change-me-dev-only-change-me}
+    BANK_AUDIT_HMAC_KEY: ${BANK_AUDIT_HMAC_KEY:-dev-only-audit-key-change-me-0123456789}
     BANK_OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
 
 services:
   gateway:
     <<: *app
     build: .
-    command: ["uvicorn", "bank_assistant.gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-    ports: ["${GATEWAY_PORT:-8080}:8000"]
-    networks: [internal, edge]
+    command: ["python", "-m", "bank_assistant.serve", "gateway"]
+    volumes: ["./.dev-certs/gateway:/certs:ro"]
     environment:
       <<: *env
-      BANK_AGENT_SERVICE_URL: http://agent:8001
+      BANK_AGENT_SERVICE_URL: https://agent:8001
       # Tokens are validated against the demo IdP's JWKS, exactly as against a production IdP.
-      BANK_OIDC_JWKS_URL: http://demo-idp:8000/.well-known/jwks.json
+      BANK_OIDC_JWKS_URL: https://demo-idp:8000/.well-known/jwks.json
     depends_on: [agent, redis, demo-idp]
 
   # Demo only: issues tokens for the two synthetic customers. Remove for any real deployment.
   demo-idp:
     <<: *app
-    command: ["uvicorn", "bank_assistant.demo_idp.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["python", "-m", "bank_assistant.serve", "demo-idp"]
+    volumes: ["./.dev-certs/demo-idp:/certs:ro"]
     environment: {<<: *env, BANK_DEMO_IDP_ENABLED: "true"}
 
   web:
@@ -49,6 +52,7 @@ services:
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
+    volumes: ["./.dev-certs/web:/certs:ro"]
     ports: ["${WEB_PORT:-3080}:8080"]
     networks: [internal, edge]
     depends_on: [gateway, demo-idp]
@@ -57,38 +61,54 @@ services:
     <<: *app
     # Needs outbound HTTPS to the model API. In production, restrict egress to that host via a proxy.
     networks: [internal, edge]
-    command: ["uvicorn", "bank_assistant.services.agent_api:create_app", "--factory", "--host", "0.0.0.0",
-              "--port", "8001"]
+    command: ["python", "-m", "bank_assistant.serve", "agent"]
+    volumes: ["./.dev-certs/agent:/certs:ro"]
     environment:
       <<: *env
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       BANK_LLM_ROUTE: ${BANK_LLM_ROUTE:-anthropic,private,rule_based}
       BANK_PRIVATE_LLM_BASE_URL: ${BANK_PRIVATE_LLM_BASE_URL:-}
       BANK_PRIVATE_LLM_MODEL: ${BANK_PRIVATE_LLM_MODEL:-llama3.1:8b}
-      BANK_MCP_ACCOUNTS_URL: http://accounts-mcp:9101/mcp
-      BANK_MCP_TRANSACTIONS_URL: http://transactions-mcp:9102/mcp
-      BANK_MCP_SERVICE_URL: http://service-mcp:9103/mcp
+      BANK_MCP_ACCOUNTS_URL: https://accounts-mcp:9101/mcp
+      BANK_MCP_TRANSACTIONS_URL: https://transactions-mcp:9102/mcp
+      BANK_MCP_SERVICE_URL: https://service-mcp:9103/mcp
     depends_on: [accounts-mcp, transactions-mcp, service-mcp, redis]
 
   accounts-mcp:
     <<: *app
-    command: ["python", "-m", "bank_assistant.mcp_servers.accounts_server"]
-    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9101"}
+    command: ["python", "-m", "bank_assistant.serve", "accounts-mcp"]
+    volumes: ["./.dev-certs/accounts-mcp:/certs:ro"]
+    depends_on: [redis]
 
   transactions-mcp:
     <<: *app
-    command: ["python", "-m", "bank_assistant.mcp_servers.transactions_server"]
-    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9102"}
+    command: ["python", "-m", "bank_assistant.serve", "transactions-mcp"]
+    volumes: ["./.dev-certs/transactions-mcp:/certs:ro"]
+    depends_on: [redis]
 
   service-mcp:
     <<: *app
-    command: ["python", "-m", "bank_assistant.mcp_servers.service_server"]
-    environment: {<<: *env, MCP_HOST: 0.0.0.0, MCP_PORT: "9103"}
+    command: ["python", "-m", "bank_assistant.serve", "service-mcp"]
+    volumes: ["./.dev-certs/service-mcp:/certs:ro"]
+    depends_on: [redis]
 
+  # TLS only (no plain port), clients must present a certificate from the internal CA, and a password is required.
   redis:
     image: redis:7.4-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb",
-              "--maxmemory-policy", "volatile-lru"]
+    user: "999"
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server --port 0 --tls-port 6379
+        --tls-cert-file /certs/tls.crt --tls-key-file /certs/tls.key --tls-ca-cert-file /certs/ca.crt
+        --tls-auth-clients yes --requirepass "$$REDIS_PASSWORD"
+        --save "" --appendonly no --maxmemory 256mb --maxmemory-policy volatile-lru
+    environment:
+      REDIS_PASSWORD: ${BANK_REDIS_PASSWORD:-dev-only-redis-password-change-me}
+    volumes: ["./.dev-certs/redis:/certs:ro"]
+    read_only: true
+    tmpfs: [/data]
     networks: [internal]
     restart: unless-stopped
 

@@ -11,6 +11,11 @@ secrets:
   create: true
   contextTokenSecret: kind-only-context-secret-0123456789abcdef
   internalServiceToken: kind-only-service-token-0123456789abcdef
+  redisPassword: kind-only-redis-password-0123456789abcdef
+  auditHmacKey: kind-only-audit-hmac-key-0123456789abcdef
+# mTLS certificates come from scripts/dev_certs.py; the smoke test creates the <component>-tls Secrets.
+tls:
+  enabled: true
 redis:
   deploy: true
 

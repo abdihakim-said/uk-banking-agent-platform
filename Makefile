@@ -1,4 +1,4 @@
-.PHONY: install test lint eval eval-claude demo keys token up down e2e kind-up kind-test kind-down rules
+.PHONY: certs audit install test lint eval eval-claude demo keys token up down e2e kind-up kind-test kind-down rules
 
 PY := .venv/bin/python
 
@@ -27,7 +27,10 @@ token:  ## token from the running demo IdP (via the web proxy)
 	@curl -s -X POST localhost:$(or $(WEB_PORT),3080)/auth/token -H 'content-type: application/json' \
 	  -d '{"customer_id": "$(or $(CUSTOMER),C001)"}' | $(PY) -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
 
-up:
+certs:  ## dev CA + per-service certificates for mutual TLS (once)
+	@[ -f .dev-certs/ca.crt ] || $(PY) scripts/dev_certs.py
+
+up: certs
 	docker compose up --build -d
 	@echo "Web app: http://localhost:$(or $(WEB_PORT),3080)"
 
@@ -51,3 +54,7 @@ kind-down:
 rules:  ## regenerate SLO rules + dashboard, then validate and unit-test the rules
 	$(PY) scripts/gen_slo_rules.py && $(PY) scripts/gen_dashboard.py
 	docker run --rm -v "$$PWD/deploy:/deploy:ro" -w /deploy/prometheus/tests --entrypoint promtool prom/prometheus:v2.55.1 test rules slo_test.yaml
+
+audit:  ## verify the audit chain and show the latest events (stack must be running)
+	docker compose exec -T gateway bank-audit verify
+	docker compose exec -T gateway bank-audit tail -n 15

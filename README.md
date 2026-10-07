@@ -30,6 +30,7 @@ Putting an LLM in front of bank customers raises five problems that a chatbot de
 | The model doing something irreversible | State-changing tools run as **dry runs**. The server validates the request and describes it, the customer sees that description, and only a plain "yes" executes the **stored** arguments. |
 | Wrong numbers stated confidently | An output guard checks that every £ amount in a reply appears in that turn's tool results; any other figure is blocked. |
 | Cost and accountability | Token cost is tracked per call, per session and per customer per day, with budgets. Every turn returns its route, tools, provider and latency, and is traced with OpenTelemetry. |
+| Traffic between services, and the record of what happened | Mutual TLS on every internal hop, Redis with TLS, client certificates and a password, and a tamper-evident (HMAC-chained) audit log of every security-relevant event. See [docs/security.md](docs/security.md). |
 
 ## Architecture
 
@@ -86,7 +87,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install          # venv + dependencies
 make demo             # scripted conversation through the whole stack, offline (no API key, no Docker)
-make test             # 99 tests
+make test             # 109 tests
 make eval             # evaluation suite with thresholds (what CI runs)
 ```
 
@@ -110,13 +111,14 @@ open http://localhost:9090    # Prometheus: metrics and alerts
 
 # The API directly
 TOKEN=$(make -s token CUSTOMER=C001)
-curl -s localhost:8080/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+curl -s localhost:3080/api/v1/chat -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"message": "What is my balance?"}'
 ```
 
 For a recorded or live walkthrough, follow [docs/demo-script.md](docs/demo-script.md).
 
-Ports 3080, 8080 and 3300 can be changed with `WEB_PORT`, `GATEWAY_PORT` and `GRAFANA_PORT`.
+Ports 3080 and 3300 can be changed with `WEB_PORT` and `GRAFANA_PORT`. The gateway isn't published: every internal hop
+requires a client certificate, so the web app's `/api` is the only way in. `make audit` verifies the audit chain.
 
 On Kubernetes, use the Helm chart and Argo CD manifests. `make kind-up && make kind-test` deploys the chart to a local
 cluster and proves the NetworkPolicies. See [docs/kubernetes.md](docs/kubernetes.md).
@@ -237,7 +239,7 @@ deploy/prometheus/ Prometheus config for compose, and rule unit tests
   reference data (2 customers, their accounts and 90 days of transactions). Runtime changes (disputes, replaced cards,
   cheque books, requests) live in Redis with atomic "only once" checks, so any number of replicas agree. There is no
   durable database: in production this layer is replaced by adapters to the bank's real systems.
-- **Chat only.** No online-banking screens, no payments, no audit log, no staff back-office.
+- **Chat only.** No online-banking screens, no payments, no staff back-office.
 - **Redaction is pattern-based** plus names from the identity token. It doesn't catch free-text descriptions of
   people or health details; add an NER model (`pip install -e ".[ner]"` plus a spaCy model) and test it on real
   traffic samples.

@@ -41,6 +41,7 @@ spec:
         {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
         runAsUser: {{ ternary 101 10001 (eq $c.kind "web") }}
         runAsGroup: {{ ternary 101 10001 (eq $c.kind "web") }}
+        fsGroup: {{ ternary 101 10001 (eq $c.kind "web") }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -77,18 +78,18 @@ spec:
             {{- end }}
           {{- end }}
           readinessProbe:
-            httpGet: {path: {{ $c.probes.readiness }}, port: http}
+            httpGet: {path: {{ $c.probes.readiness }}, port: {{ $c.probes.port | default "http" }}}
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
-            httpGet: {path: {{ $c.probes.liveness }}, port: http}
+            httpGet: {path: {{ $c.probes.liveness }}, port: {{ $c.probes.port | default "http" }}}
             initialDelaySeconds: 10
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
           startupProbe:
-            httpGet: {path: {{ $c.probes.liveness }}, port: http}
+            httpGet: {path: {{ $c.probes.liveness }}, port: {{ $c.probes.port | default "http" }}}
             periodSeconds: 3
             failureThreshold: 40
           lifecycle:
@@ -101,6 +102,9 @@ spec:
             {{- if eq $c.kind "web" }}
             - {name: nginx-conf, mountPath: /etc/nginx/conf.d, readOnly: true}
             {{- end }}
+            {{- if $root.Values.tls.enabled }}
+            - {name: certs, mountPath: /certs, readOnly: true}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 64Mi}
@@ -108,6 +112,12 @@ spec:
         - name: nginx-conf
           configMap:
             name: {{ include "bank.fullname" $root }}-web-nginx
+        {{- end }}
+        {{- if $root.Values.tls.enabled }}
+        - name: certs
+          secret:
+            secretName: {{ include "bank.tlsSecret" (dict "root" $root "name" $c.name) }}
+            defaultMode: 0440
         {{- end }}
 {{- end }}
 {{- end }}

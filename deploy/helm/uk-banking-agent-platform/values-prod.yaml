@@ -15,6 +15,11 @@ config:
   oidc:
     issuer: https://login.example-bank.co.uk
     jwksUrl: https://login.example-bank.co.uk/.well-known/jwks.json
+tls:
+  enabled: true
+  certManager:
+    enabled: true
+    issuerRef: {kind: ClusterIssuer, name: internal-ca}   # your internal CA (Vault PKI, AD CS, AWS Private CA...)
 externalSecrets:
   enabled: true
   secretStoreRef: {kind: ClusterSecretStore, name: platform-secrets}

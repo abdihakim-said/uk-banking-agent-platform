@@ -56,11 +56,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev,e2e]"
       - run: .venv/bin/python -m playwright install --with-deps chromium
-      - name: Start the stack (no API key, so the agent falls back to the offline model)
+      - name: Start the stack (mTLS everywhere; no API key, so the agent falls back to the offline model)
         run: |
+          .venv/bin/python scripts/dev_certs.py
           docker compose up --build -d
           for i in $(seq 1 60); do curl -sf localhost:3080/auth/personas >/dev/null && break; sleep 2; done
       - run: .venv/bin/python -m pytest e2e -q
+      - name: Audit chain written during the browser tests verifies
+        run: docker compose exec -T gateway bank-audit verify
       - if: failure()
         run: docker compose ps -a && docker compose logs --tail 80
 

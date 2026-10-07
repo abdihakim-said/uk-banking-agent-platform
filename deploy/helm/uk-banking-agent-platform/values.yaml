@@ -23,7 +23,7 @@ config:
   anthropicEffort: medium
   privateLlmBaseUrl: ""        # e.g. http://vllm.models.svc:8000
   privateLlmModel: llama3.1:8b
-  redisUrl: ""                 # required unless redis.deploy is true (use rediss:// with AUTH for managed Redis)
+  redisUrl: ""                 # required unless redis.deploy is true; prod requires rediss:// (TLS) and a password
   otlpEndpoint: ""             # e.g. http://otel-collector.observability.svc:4317
   rateLimitPerMinute: 20
   rateLimitPerIpPerMinute: 60
@@ -35,13 +35,16 @@ config:
     jwksUrl: ""                # defaults to the demo IdP when it's enabled
     requiredScope: banking.chat
 
-# Secret holding BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN and ANTHROPIC_API_KEY.
+# Secret holding BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY and
+# ANTHROPIC_API_KEY. Each pod gets only the keys listed in its component's secretEnv.
 # Use one of: an existing Secret, External Secrets (recommended), or create (local clusters only).
 secrets:
   existingSecret: ""
   create: false
   contextTokenSecret: ""
   internalServiceToken: ""
+  redisPassword: ""
+  auditHmacKey: ""
   anthropicApiKey: ""
 
 externalSecrets:
@@ -53,9 +56,22 @@ externalSecrets:
   remoteKeys:
     contextTokenSecret: bank-assistant-context-token-secret
     internalServiceToken: bank-assistant-internal-service-token
+    redisPassword: bank-assistant-redis-password
+    auditHmacKey: bank-assistant-audit-hmac-key
     anthropicApiKey: bank-assistant-anthropic-api-key
 
-# In-cluster Redis with no persistence or auth. For local clusters and demos only.
+# Mutual TLS on every internal hop. Each component mounts the Secret "<fullname>-<component>-tls" (tls.crt, tls.key,
+# ca.crt) at /certs. With certManager.enabled the chart requests those certificates from your issuer; otherwise create
+# the Secrets yourself (deploy/kind/smoke-test.sh does, from scripts/dev_certs.py).
+tls:
+  enabled: true
+  certManager:
+    enabled: false
+    issuerRef: {kind: ClusterIssuer, name: internal-ca}
+    duration: 2160h      # 90 days
+    renewBefore: 360h    # 15 days
+
+# In-cluster Redis (TLS, client certificates and a password, but no persistence). For local clusters and demos only.
 redis:
   deploy: false
   image: redis:7.4-alpine
@@ -75,12 +91,11 @@ components:
     enabled: true
     name: gateway
     kind: python
-    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY]
     port: 8000
     replicas: 2
-    command: ["uvicorn", "bank_assistant.gateway.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
-              "--timeout-graceful-shutdown", "45", "--no-server-header"]
-    probes: {liveness: /healthz, readiness: /readyz}
+    command: ["python", "-m", "bank_assistant.serve", "gateway"]
+    probes: {liveness: /healthz, readiness: /readyz, port: metrics}
     terminationGracePeriodSeconds: 60
     resources:
       requests: {cpu: 100m, memory: 192Mi}
@@ -91,12 +106,13 @@ components:
     enabled: true
     name: agent
     kind: python
-    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, ANTHROPIC_API_KEY]  # only the agent gets the model API key
+    # Only the agent gets the model API key.
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY,
+                ANTHROPIC_API_KEY]
     port: 8001
     replicas: 2
-    command: ["uvicorn", "bank_assistant.services.agent_api:create_app", "--factory", "--host", "0.0.0.0", "--port",
-              "8001", "--timeout-graceful-shutdown", "75", "--no-server-header"]
-    probes: {liveness: /healthz, readiness: /readyz}
+    command: ["python", "-m", "bank_assistant.serve", "agent"]
+    probes: {liveness: /healthz, readiness: /readyz, port: metrics}
     terminationGracePeriodSeconds: 90   # LLM tool loops can take tens of seconds; let them finish
     resources:
       requests: {cpu: 200m, memory: 384Mi}
@@ -107,12 +123,11 @@ components:
     enabled: true
     name: accounts-mcp
     kind: python
-    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
-    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9101"}
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY]
     port: 9101
     replicas: 2
-    command: ["python", "-m", "bank_assistant.mcp_servers.accounts_server"]
-    probes: {liveness: /healthz, readiness: /healthz}
+    command: ["python", "-m", "bank_assistant.serve", "accounts-mcp"]
+    probes: {liveness: /healthz, readiness: /readyz, port: metrics}
     terminationGracePeriodSeconds: 30
     resources:
       requests: {cpu: 50m, memory: 128Mi}
@@ -123,12 +138,11 @@ components:
     enabled: true
     name: transactions-mcp
     kind: python
-    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
-    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9102"}
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY]
     port: 9102
     replicas: 2
-    command: ["python", "-m", "bank_assistant.mcp_servers.transactions_server"]
-    probes: {liveness: /healthz, readiness: /healthz}
+    command: ["python", "-m", "bank_assistant.serve", "transactions-mcp"]
+    probes: {liveness: /healthz, readiness: /readyz, port: metrics}
     terminationGracePeriodSeconds: 30
     resources:
       requests: {cpu: 50m, memory: 128Mi}
@@ -139,12 +153,11 @@ components:
     enabled: true
     name: service-mcp
     kind: python
-    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN]
-    env: {MCP_HOST: 0.0.0.0, MCP_PORT: "9103"}
+    secretEnv: [BANK_CONTEXT_TOKEN_SECRET, BANK_INTERNAL_SERVICE_TOKEN, BANK_REDIS_PASSWORD, BANK_AUDIT_HMAC_KEY]
     port: 9103
     replicas: 2
-    command: ["python", "-m", "bank_assistant.mcp_servers.service_server"]
-    probes: {liveness: /healthz, readiness: /healthz}
+    command: ["python", "-m", "bank_assistant.serve", "service-mcp"]
+    probes: {liveness: /healthz, readiness: /readyz, port: metrics}
     terminationGracePeriodSeconds: 30
     resources:
       requests: {cpu: 50m, memory: 128Mi}
@@ -160,8 +173,8 @@ components:
     env: {BANK_DEMO_IDP_ENABLED: "true"}
     port: 8000
     replicas: 1
-    command: ["uvicorn", "bank_assistant.demo_idp.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-    probes: {liveness: /healthz, readiness: /healthz}
+    command: ["python", "-m", "bank_assistant.serve", "demo-idp"]
+    probes: {liveness: /healthz, readiness: /healthz, port: metrics}
     terminationGracePeriodSeconds: 10
     resources:
       requests: {cpu: 20m, memory: 96Mi}

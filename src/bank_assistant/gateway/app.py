@@ -21,7 +21,10 @@ from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
 from bank_assistant.config import Settings, get_settings
+from bank_assistant.core.audit import AuditLog
+from bank_assistant.core.redis_client import async_redis
 from bank_assistant.core.session_store import SessionOwnershipError, SessionStore
+from bank_assistant.core.tls import client_context
 from bank_assistant.gateway.auth import AuthError, JwtVerifier, Principal
 from bank_assistant.gateway.rate_limit import RateLimiter, SessionLock
 from bank_assistant.logging import configure_logging, get_logger
@@ -48,23 +51,28 @@ class ChatResponse(BaseModel):
 
 
 def create_app(settings: Settings | None = None, redis: Redis | None = None, verifier: JwtVerifier | None = None,
-               agent_client: httpx.AsyncClient | None = None, redactor: Redactor | None = None) -> FastAPI:
+               agent_client: httpx.AsyncClient | None = None, redactor: Redactor | None = None,
+               audit: AuditLog | None = None) -> FastAPI:
     settings = settings or get_settings()
-    deps: dict[str, Any] = {"redis": redis, "verifier": verifier, "agent": agent_client, "redactor": redactor}
+    deps: dict[str, Any] = {"redis": redis, "verifier": verifier, "agent": agent_client, "redactor": redactor,
+                            "audit": audit}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if deps["redis"] is None:
             configure_logging(settings.log_level, "gateway")
             setup_tracing("gateway", settings.otel_exporter_otlp_endpoint)
-            deps["redis"] = Redis.from_url(settings.redis_url)
-            metrics.serve_metrics(settings.metrics_port)
+            deps["redis"] = async_redis(settings)
+        if deps["audit"] is None:
+            deps["audit"] = AuditLog(deps["redis"], settings.audit_hmac_key.get_secret_value(), "gateway")
         if deps["verifier"] is None:
             deps["verifier"] = JwtVerifier.from_settings(settings.oidc_issuer, settings.oidc_audience,
                                                          settings.oidc_required_scope, settings.oidc_jwks_url,
-                                                         settings.oidc_dev_public_key_path)
+                                                         settings.oidc_dev_public_key_path,
+                                                         ssl_context=client_context(settings, trust_public_cas=True))
         if deps["agent"] is None:
-            deps["agent"] = httpx.AsyncClient(base_url=settings.agent_service_url, timeout=120.0)
+            deps["agent"] = httpx.AsyncClient(base_url=settings.agent_service_url, timeout=120.0,
+                                              verify=client_context(settings) or True)
         if deps["redactor"] is None:
             deps["redactor"] = Redactor(default_name_detector())
         yield
@@ -94,19 +102,25 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                    authorization: Annotated[str | None, Header()] = None) -> ChatResponse:
         redis_client: Redis = deps["redis"]
         started = time.perf_counter()
+        client_ip = request.client.host if request.client else "unknown"
+        audit: AuditLog | None = deps["audit"]
         try:
             principal: Principal = deps["verifier"].verify(authorization)
         except AuthError as exc:
+            if audit:
+                await audit.record("auth_failed", outcome="denied", reason=exc.detail, ip=client_ip)
             raise fail(exc.status, exc.detail, "auth_failed",
                        {"WWW-Authenticate": "Bearer"} if exc.status == 401 else None) from exc
 
         limiter = RateLimiter(redis_client)
-        client_ip = request.client.host if request.client else "unknown"
         for scope, key, limit in (("customer", principal.customer_id, settings.rate_limit_per_minute),
                                   ("ip", client_ip, settings.rate_limit_per_ip_per_minute)):
             allowed, retry_after = await limiter.hit(scope, key, limit)
             if not allowed:
                 metrics.RATE_LIMITED.labels(scope).inc()
+                if audit:
+                    await audit.record("rate_limited", outcome="denied", actor=principal.customer_id, scope=scope,
+                                       ip=client_ip)
                 raise fail(429, "too many requests", "rate_limited", {"Retry-After": str(retry_after)})
 
         if len(body.message) > settings.max_message_chars:
@@ -117,6 +131,9 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
         try:
             await store.claim(session_id, principal.customer_id)
         except SessionOwnershipError as exc:
+            if audit:
+                await audit.record("session_access_denied", outcome="denied", actor=principal.customer_id,
+                                   session_id=session_id, ip=client_ip)
             raise fail(403, "session belongs to another user", "session_forbidden") from exc
 
         lock = SessionLock(redis_client)
@@ -150,6 +167,9 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
             vault = PiiVault(await store.load_vault(session_id))  # the agent may have added entries
             metrics.GATEWAY_REQUESTS.labels("ok").inc()
             metrics.GATEWAY_LATENCY.observe(time.perf_counter() - started)
+            if audit:
+                await audit.record("chat_turn", outcome=turn["outcome"], actor=principal.customer_id,
+                                   session_id=session_id, route=turn["route"], pii_types_hidden=hidden)
             log.info("chat_turn", session_id=session_id, route=turn["route"], outcome=turn["outcome"],
                      cost_usd=turn["cost_usd"])
             return ChatResponse(session_id=session_id, reply=vault.render_for_customer(turn["reply"]),

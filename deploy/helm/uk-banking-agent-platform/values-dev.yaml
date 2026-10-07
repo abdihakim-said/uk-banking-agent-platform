@@ -10,6 +10,9 @@ imagePullSecrets: [{name: ghcr-pull}]   # the GHCR packages are private
 config:
   llmRoute: anthropic,rule_based
   otlpEndpoint: http://otel-collector.observability.svc:4317
+tls:
+  enabled: true
+  certManager: {enabled: true, issuerRef: {kind: ClusterIssuer, name: internal-ca}}
 externalSecrets:
   enabled: true
   secretStoreRef: {kind: ClusterSecretStore, name: platform-secrets}

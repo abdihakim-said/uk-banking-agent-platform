@@ -8,10 +8,11 @@ data:
   BANK_ENVIRONMENT: {{ .Values.environment | quote }}
   BANK_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   BANK_REDIS_URL: {{ include "bank.redisUrl" . | quote }}
-  BANK_AGENT_SERVICE_URL: {{ printf "http://%s:%v" (include "bank.component" (dict "root" . "name" $c.agent.name)) $c.agent.port | quote }}
-  BANK_MCP_ACCOUNTS_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.accountsMcp.name)) $c.accountsMcp.port | quote }}
-  BANK_MCP_TRANSACTIONS_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.transactionsMcp.name)) $c.transactionsMcp.port | quote }}
-  BANK_MCP_SERVICE_URL: {{ printf "http://%s:%v/mcp" (include "bank.component" (dict "root" . "name" $c.serviceMcp.name)) $c.serviceMcp.port | quote }}
+  BANK_TLS_ENABLED: {{ .Values.tls.enabled | quote }}
+  BANK_AGENT_SERVICE_URL: {{ printf "%s://%s:%v" (include "bank.scheme" .) (include "bank.component" (dict "root" . "name" $c.agent.name)) $c.agent.port | quote }}
+  BANK_MCP_ACCOUNTS_URL: {{ printf "%s://%s:%v/mcp" (include "bank.scheme" .) (include "bank.component" (dict "root" . "name" $c.accountsMcp.name)) $c.accountsMcp.port | quote }}
+  BANK_MCP_TRANSACTIONS_URL: {{ printf "%s://%s:%v/mcp" (include "bank.scheme" .) (include "bank.component" (dict "root" . "name" $c.transactionsMcp.name)) $c.transactionsMcp.port | quote }}
+  BANK_MCP_SERVICE_URL: {{ printf "%s://%s:%v/mcp" (include "bank.scheme" .) (include "bank.component" (dict "root" . "name" $c.serviceMcp.name)) $c.serviceMcp.port | quote }}
   BANK_LLM_ROUTE: {{ .Values.config.llmRoute | quote }}
   BANK_ANTHROPIC_MODEL: {{ .Values.config.anthropicModel | quote }}
   BANK_ANTHROPIC_EFFORT: {{ .Values.config.anthropicEffort | quote }}

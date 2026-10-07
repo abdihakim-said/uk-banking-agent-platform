@@ -1,0 +1,30 @@
+{{- if and .Values.tls.enabled .Values.tls.certManager.enabled }}
+{{- $root := . }}
+{{- $names := list "redis" }}
+{{- range $key, $c := .Values.components }}{{ if $c.enabled }}{{ $names = append $names $c.name }}{{ end }}{{ end }}
+{{- range $name := $names }}
+{{- if or (ne $name "redis") $root.Values.redis.deploy }}
+{{- $svc := include "bank.component" (dict "root" $root "name" $name) }}
+---
+# One certificate per component, usable as both server and client: the identity it presents on every mTLS hop.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $svc }}
+  labels: {{- include "bank.labels" $root | nindent 4 }}
+spec:
+  secretName: {{ include "bank.tlsSecret" (dict "root" $root "name" $name) }}
+  issuerRef: {{- toYaml $root.Values.tls.certManager.issuerRef | nindent 4 }}
+  duration: {{ $root.Values.tls.certManager.duration }}
+  renewBefore: {{ $root.Values.tls.certManager.renewBefore }}
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  usages: [digital signature, key encipherment, server auth, client auth]
+  commonName: {{ $svc }}
+  dnsNames:
+    - {{ $svc }}
+    - {{ $svc }}.{{ $root.Release.Namespace }}
+    - {{ $svc }}.{{ $root.Release.Namespace }}.svc
+    - {{ $svc }}.{{ $root.Release.Namespace }}.svc.cluster.local
+{{- end }}
+{{- end }}
+{{- end }}
