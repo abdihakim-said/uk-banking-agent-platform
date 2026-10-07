@@ -78,6 +78,22 @@ if $K run np-probe --image=busybox:1.36 --restart=Never --rm -i --quiet -- \
 else
   echo "ok    unlabelled pod -> gateway is blocked"
 fi
+# Egress allowlist: from the agent, the model API is reachable through the proxy; anything else is refused by the proxy,
+# and going around the proxy is blocked by NetworkPolicy.
+egress=$($K exec "deploy/$P-agent" -- python -c "
+import socket, httpx
+def via_proxy(u):
+    try: return httpx.get(u, timeout=8).status_code
+    except Exception: return 'blocked'
+def direct():
+    try: socket.create_connection(('1.1.1.1', 443), timeout=4); return 'open'
+    except Exception: return 'blocked'
+print(via_proxy('https://api.anthropic.com/v1/models'), via_proxy('https://example.com'), direct())")
+read -r model other bypass <<< "$egress"
+[[ "$model" =~ ^[0-9]+$ ]] && echo "ok    agent -> model API via egress proxy is open (HTTP $model)" || { echo "FAIL  agent -> model API: $model"; fail=1; }
+[[ "$other" == blocked ]] && echo "ok    agent -> example.com via egress proxy is blocked" || { echo "FAIL  agent -> example.com: $other"; fail=1; }
+[[ "$bypass" == blocked ]] && echo "ok    agent -> internet bypassing the proxy is blocked" || { echo "FAIL  agent bypassed proxy"; fail=1; }
+
 # The audit chain written by the gateway and agent during these tests verifies.
 if $K exec "deploy/$P-gateway" -- bank-audit verify; then echo "ok    audit chain intact"; else echo "FAIL  audit chain"; fail=1; fi
 exit $fail

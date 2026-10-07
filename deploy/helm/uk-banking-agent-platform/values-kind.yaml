@@ -2,6 +2,9 @@
 environment: dev
 image: {repository: uk-banking-agent-platform, tag: local, pullPolicy: Never}
 webImage: {repository: uk-banking-agent-platform-web, tag: local, pullPolicy: Never}
+egressProxy:
+  image: {repository: uk-banking-agent-platform-egress, tag: local, pullPolicy: Never}
+  replicas: 1
 
 config:
   llmRoute: anthropic,rule_based   # without an API key the agent falls back to the offline model

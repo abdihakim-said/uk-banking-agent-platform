@@ -23,6 +23,10 @@ data:
         add_header X-Content-Type-Options nosniff always;
         add_header Referrer-Policy no-referrer always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+        add_header Cross-Origin-Opener-Policy same-origin always;
+        add_header Cross-Origin-Embedder-Policy require-corp always;
+        add_header Cross-Origin-Resource-Policy same-origin always;
+        add_header Cache-Control "no-store" always;
 
         {{- if .Values.tls.enabled }}
         # Mutual TLS to the gateway and IdP: verify them against the internal CA and present our certificate.

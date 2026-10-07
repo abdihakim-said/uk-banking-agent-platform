@@ -9,3 +9,4 @@ __pycache__/
 eval-report*.json
 .dev-certs/
 .dev-certs-kind/
+redteam-report*.json

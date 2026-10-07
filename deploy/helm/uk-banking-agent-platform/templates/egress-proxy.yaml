@@ -1,0 +1,82 @@
+{{- if .Values.egressProxy.enabled }}
+{{- $name := include "bank.component" (dict "root" . "name" "egress-proxy") }}
+{{- $e := .Values.egressProxy }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+data:
+  allowed-domains.txt: |
+    {{- range $e.allowedDomains }}
+    {{ . }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "bank.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  replicas: {{ $e.replicas }}
+  selector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" "egress-proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bank.labels" . | nindent 8 }}
+        app.kubernetes.io/component: egress-proxy
+      annotations:
+        checksum/allowlist: {{ toJson $e.allowedDomains | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 31, runAsGroup: 31, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: squid
+          image: {{ printf "%s:%s" $e.image.repository (default .Chart.AppVersion $e.image.tag) }}
+          imagePullPolicy: {{ $e.image.pullPolicy }}
+          ports: [{name: proxy, containerPort: 3128}]
+          readinessProbe: {tcpSocket: {port: proxy}, periodSeconds: 5}
+          livenessProbe: {tcpSocket: {port: proxy}, periodSeconds: 20}
+          resources: {{- toYaml $e.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: allowlist, mountPath: /etc/squid/allowlist, readOnly: true}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 32Mi}}
+        - {name: allowlist, configMap: {name: {{ $name }}}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "bank.componentSelector" (dict "root" . "name" "egress-proxy") | nindent 4 }}
+  ports: [{name: proxy, port: 3128, targetPort: proxy}]
+{{- if .Values.networkPolicy.enabled }}
+---
+# The proxy: only the agent (and the gateway, for an external IdP) may use it; it alone may open HTTPS to the internet,
+# and only for the allowlisted hostnames.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels: {{- include "bank.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "bank.componentSelector" (dict "root" . "name" "egress-proxy") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- include "bank.np.from" (dict "root" . "name" .Values.components.agent.name) | nindent 8 }}
+        {{- include "bank.np.from" (dict "root" . "name" .Values.components.gateway.name) | nindent 8 }}
+      ports: [{port: 3128, protocol: TCP}]
+  egress:
+    - to: [{ipBlock: {cidr: {{ .Values.networkPolicy.externalEgress.cidr }}, except: {{ toJson .Values.networkPolicy.externalEgress.except }}}}]
+      ports: [{port: 443, protocol: TCP}]
+{{- end }}
+{{- end }}

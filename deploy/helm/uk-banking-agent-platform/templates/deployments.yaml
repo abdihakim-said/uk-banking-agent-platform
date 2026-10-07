@@ -76,6 +76,12 @@ spec:
             {{- range $k, $v := $c.env }}
             - {name: {{ $k }}, value: {{ $v | quote }}}
             {{- end }}
+            {{- if and $root.Values.egressProxy.enabled (or (eq $c.name $root.Values.components.agent.name) (and (eq $c.name $root.Values.components.gateway.name) (not $root.Values.components.demoIdp.enabled))) }}
+            {{- $proxy := printf "http://%s:3128" (include "bank.component" (dict "root" $root "name" "egress-proxy")) }}
+            - {name: HTTPS_PROXY, value: {{ $proxy | quote }}}
+            - {name: HTTP_PROXY, value: {{ $proxy | quote }}}
+            - {name: NO_PROXY, value: "localhost,127.0.0.1,.svc,.svc.cluster.local,{{ include "bank.fullname" $root }}-redis,{{ include "bank.fullname" $root }}-accounts-mcp,{{ include "bank.fullname" $root }}-transactions-mcp,{{ include "bank.fullname" $root }}-service-mcp,{{ include "bank.fullname" $root }}-agent,{{ include "bank.fullname" $root }}-demo-idp"}
+            {{- end }}
           {{- end }}
           readinessProbe:
             httpGet: {path: {{ $c.probes.readiness }}, port: {{ $c.probes.port | default "http" }}}

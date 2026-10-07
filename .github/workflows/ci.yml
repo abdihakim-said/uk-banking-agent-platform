@@ -17,6 +17,7 @@ permissions:
 env:
   IMAGE: ghcr.io/abdihakim-said/uk-banking-agent-platform
   WEB_IMAGE: ghcr.io/abdihakim-said/uk-banking-agent-platform-web
+  EGRESS_IMAGE: ghcr.io/abdihakim-said/uk-banking-agent-platform-egress
 
 jobs:
   test:
@@ -31,15 +32,25 @@ jobs:
         run: .venv/bin/python -m pytest -q
       - name: Guardrail evals (offline model; checks routing, confirmations, PII and grounding)
         run: .venv/bin/bank-eval --report eval-report.json
+      - name: AI red team (39 attacks; any success fails the build)
+        run: .venv/bin/bank-redteam --report redteam-report.json
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: eval-report, path: eval-report.json}
+        with: {name: eval-report, path: "*-report.json"}
 
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t uk-banking-agent-platform:ci .
+      - run: docker build -t uk-banking-agent-platform-egress:ci deploy/egress-proxy
+      - name: Scan egress proxy image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: uk-banking-agent-platform-egress:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Scan image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -64,8 +75,40 @@ jobs:
       - run: .venv/bin/python -m pytest e2e -q
       - name: Audit chain written during the browser tests verifies
         run: docker compose exec -T gateway bank-audit verify
+      - name: Dynamic scan of the running web app (OWASP ZAP baseline)
+        run: |
+          docker run --rm --network host -v "$PWD:/zap/wrk:rw" zaproxy/zap-stable \
+            zap-baseline.py -t http://localhost:3080 -c zap-rules.tsv -I || exit_code=$?
+          # -I: warnings don't fail; FAIL-level rules (zap-rules.tsv) do, via exit code 1
+          [ "${exit_code:-0}" -ne 1 ]
+      - name: Egress allowlist (agent can reach the model API only)
+        run: |
+          docker compose exec -T agent python -c "
+          import httpx, sys
+          ok = httpx.get('https://api.anthropic.com/v1/models', timeout=10).status_code
+          try:
+              httpx.get('https://example.com', timeout=10); sys.exit('example.com was reachable')
+          except httpx.HTTPError:
+              print('model API', ok, '| example.com blocked')"
       - if: failure()
         run: docker compose ps -a && docker compose logs --tail 80
+
+  security:
+    name: security scans (SAST, secrets, dependencies, IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}   # gitleaks scans the whole history
+      - name: Semgrep (SAST)
+        run: docker run --rm -v "$PWD:/src" semgrep/semgrep semgrep scan --config p/python --config p/security-audit --error /src/src
+      - name: Gitleaks (secrets in git history)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --config /repo/.gitleaks.toml --redact
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev,e2e]"
+      - name: pip-audit (known vulnerabilities in dependencies)
+        run: uvx pip-audit --path .venv/lib/python3.12/site-packages --progress-spinner off
+      - name: Trivy config (Dockerfiles, compose, Helm chart)
+        run: docker run --rm -v "$PWD:/repo" aquasec/trivy:0.57.1 config --severity HIGH,CRITICAL --exit-code 1 /repo
 
   kubernetes:
     name: helm + kind (NetworkPolicy and e2e on a real cluster)
@@ -110,7 +153,10 @@ jobs:
         run: |
           docker build -t uk-banking-agent-platform:local .
           docker build -t uk-banking-agent-platform-web:local web
-          kind load docker-image uk-banking-agent-platform:local uk-banking-agent-platform-web:local --name bank-assistant
+          docker build -t uk-banking-agent-platform-egress:local deploy/egress-proxy
+          for img in uk-banking-agent-platform:local uk-banking-agent-platform-web:local uk-banking-agent-platform-egress:local; do
+            kind load docker-image $img --name bank-assistant
+          done
       - uses: astral-sh/setup-uv@v5
       - run: uv venv --python 3.12 .venv && uv pip install --python .venv -e ".[dev,e2e]"
       - run: .venv/bin/python -m playwright install --with-deps chromium
@@ -125,7 +171,7 @@ jobs:
   publish:
     name: publish images and promote to dev
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, docker, e2e, kubernetes]
+    needs: [test, docker, e2e, kubernetes, security]
     runs-on: ubuntu-latest
     permissions:
       contents: write     # commit the new tag to values-dev.yaml
@@ -141,8 +187,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           docker build -t $IMAGE:$TAG -t $IMAGE:main .
           docker build -t $WEB_IMAGE:$TAG -t $WEB_IMAGE:main web
+          docker build -t $EGRESS_IMAGE:$TAG -t $EGRESS_IMAGE:main deploy/egress-proxy
           docker push --all-tags $IMAGE
           docker push --all-tags $WEB_IMAGE
+          docker push --all-tags $EGRESS_IMAGE
       - name: Promote to dev by Git (Argo CD syncs it)
         run: |
           TAG=${{ steps.tag.outputs.tag }}

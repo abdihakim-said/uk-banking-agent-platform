@@ -1,0 +1,8 @@
+# Secret scanning config: the default rules, plus an allowlist for values that are deliberately fake.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and dev-only placeholders (never real credentials)"
+paths = ['''src/bank_assistant/testing\.py''', '''tests/.*''']
+regexes = ['''dev-only-[a-z0-9-]+''', '''kind-only-[a-z0-9-]+''', '''test-[a-z-]*secret[a-z0-9-]*''']

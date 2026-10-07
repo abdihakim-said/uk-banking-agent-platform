@@ -1,0 +1,7 @@
+# ZAP baseline rule levels (rule-id, action, name). Anything not listed uses ZAP's default (WARN).
+10038	FAIL	Content Security Policy (CSP) Header Not Set
+10020	FAIL	Missing Anti-clickjacking Header
+10021	FAIL	X-Content-Type-Options Header Missing
+10035	FAIL	Strict-Transport-Security Header Not Set (behind TLS-terminating ingress in prod)
+10096	FAIL	Timestamp Disclosure
+10109	IGNORE	Modern Web Application (informational)

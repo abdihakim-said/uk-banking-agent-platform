@@ -97,7 +97,11 @@ class RuleBasedProvider:
     def _first_call(self, text: str, tools: set[str]) -> tuple[str, dict[str, Any]] | None:
         t = text.lower()
         merchant = _merchant(text)
+        explicit_tx = re.search(r"\btx_[a-z0-9]+_\d+\b", t)
         candidates: list[tuple[bool, str, dict[str, Any]]] = [
+            # An explicit transaction id goes straight to the dispute tool, so the server's ownership check decides.
+            (bool(explicit_tx) and ("dispute" in t or "recogni" in t), "raise_dispute",
+             {"transaction_id": explicit_tx.group(0) if explicit_tx else None, "reason": "not_recognised"}),
             ("dispute" in t or "recogni" in t, "search_transactions",
              {"merchant": merchant, "direction": "debit", "limit": 5}),
             ("statement" in t, "request_statement", {

@@ -59,8 +59,7 @@ services:
 
   agent:
     <<: *app
-    # Needs outbound HTTPS to the model API. In production, restrict egress to that host via a proxy.
-    networks: [internal, edge]
+    # Internal network only: the agent's one way out is the egress proxy, which allows the model API and nothing else.
     command: ["python", "-m", "bank_assistant.serve", "agent"]
     volumes: ["./.dev-certs/agent:/certs:ro"]
     environment:
@@ -72,7 +71,21 @@ services:
       BANK_MCP_ACCOUNTS_URL: https://accounts-mcp:9101/mcp
       BANK_MCP_TRANSACTIONS_URL: https://transactions-mcp:9102/mcp
       BANK_MCP_SERVICE_URL: https://service-mcp:9103/mcp
-    depends_on: [accounts-mcp, transactions-mcp, service-mcp, redis]
+      HTTPS_PROXY: http://egress-proxy:3128
+      HTTP_PROXY: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,redis,jaeger,gateway,agent,demo-idp,accounts-mcp,transactions-mcp,service-mcp,ollama
+    depends_on: [accounts-mcp, transactions-mcp, service-mcp, redis, egress-proxy]
+
+  # Egress allowlist: HTTPS to the hostnames in deploy/egress-proxy/allowed-domains.txt (the model API) only.
+  egress-proxy:
+    build: ./deploy/egress-proxy
+    image: uk-banking-agent-platform-egress:local
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [internal, edge]
 
   accounts-mcp:
     <<: *app

@@ -52,13 +52,51 @@ Redis holds the PII placeholder vault, so all three layers matter.
 Lock or Azure immutable blob storage, for the retention period your regulator requires, and keep the HMAC key in an
 HSM-backed key vault.
 
+## Strong customer authentication for high-risk actions
+
+Replacing a card or changing contact details needs a one-time code on top of the customer's "yes", in the style of
+PSD2 SCA.
+
+1. The agent marks the pending action high-risk and computes its **binding**: a SHA-256 fingerprint of the tool and
+   its exact arguments. This is the "dynamic linking" PSD2 requires.
+2. The IdP sends a 6-digit code to the registered phone (shown as a simulated SMS in the demo). Codes are valid for 5
+   minutes, single use, and three wrong codes end the challenge.
+3. A correct code returns a **step-up token** (`acr=urn:bank:sca:otp`, `txn=<binding>`, valid 5 minutes).
+4. The gateway verifies the token: signature, issuer, audience, same customer, freshness.
+5. The agent runs the action only if `txn` matches the action it's holding. Otherwise the action stays pending and
+   nothing changes.
+
+Tested: refused without a code, with a code for another action, for another customer, when stale, and when the
+token isn't SCA. The browser test covers the whole flow, including a wrong code.
+
+## Egress allowlist
+
+The agent has no direct route to the internet. In compose it's on the internal network only; in Kubernetes,
+NetworkPolicy allows it to reach only the egress proxy. The proxy (Squid, non-root, read-only) allows HTTPS
+`CONNECT` to the hostnames in `egressProxy.allowedDomains` (by default `api.anthropic.com`) and refuses everything
+else. Even a fully hijacked model can't send data to an attacker's server.
+
+Tested in compose and on the kind cluster: model API reachable, `example.com` refused by the proxy, and going around
+the proxy blocked by the network. Managed alternatives: Azure Firewall or AWS Network Firewall FQDN rules, or Cilium
+FQDN policies.
+
+## Automated security testing
+
+These checks run in CI on every push. **They are not a penetration test**, which needs an independent tester.
+
+| Check | Tool | What it covers |
+|---|---|---|
+| AI red team | `bank-redteam` (`evals/redteam.yaml`) | 39 attacks in 10 categories: instruction override, another customer's data, bypassing confirmation and SCA, PII extraction, regulated advice, social engineering, encoded and multilingual attacks, indirect injection through a poisoned transaction description, tool abuse. An attack fails the build if it changes state, leaks data or secrets, or gets raw PII to a model; success is judged from the bank's own state, not from the reply. Run it against Claude with `bank-redteam --provider anthropic`. |
+| Static analysis | Semgrep (`p/python`, `p/security-audit`), ruff `S` rules (Bandit) | Injection, unsafe deserialisation, weak crypto, subprocess misuse… |
+| Secrets | Gitleaks over the whole git history | Keys and tokens committed by mistake (`.gitleaks.toml` allowlists only test fixtures and dev placeholders) |
+| Dependencies | pip-audit | Known CVEs in installed packages |
+| Images | Trivy (app, web, egress proxy) | OS and library CVEs, failing on fixable HIGH or CRITICAL |
+| Infrastructure as code | Trivy config | Dockerfiles, compose file and Helm chart misconfigurations |
+| Running app | OWASP ZAP baseline | Missing security headers, information disclosure and similar issues in the live web app |
+
 ## What's still not covered
 
-- **Strong customer authentication step-up** for high-risk actions. Confirmation is a typed or clicked "yes" inside
-  an authenticated session.
-- **Penetration test and formal threat model.**
-- **Egress to the model API by hostname.** NetworkPolicy works on IP ranges; use an egress proxy or Cilium FQDN
-  policies.
+- **An independent penetration test and a formal threat model.**
 - **Per-service authorisation from certificate identity.** mTLS proves "a service with a certificate from our CA";
   which service may call which is enforced by NetworkPolicy and the internal service token. A mesh
   AuthorizationPolicy, or SPIFFE IDs, would add identity-based authorisation.

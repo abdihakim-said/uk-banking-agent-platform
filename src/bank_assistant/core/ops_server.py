@@ -58,6 +58,8 @@ def http_check(url: str, ctx: object | None, timeout: float = 2.0) -> str:
     import urllib.request
 
     try:
+        # The URL is a dependency's health endpoint from this service's own settings, never from a request.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(url, timeout=timeout,  # noqa: S310 - internal URLs from settings
                                     context=ctx if isinstance(ctx, ssl.SSLContext) else None) as r:
             return "ok" if r.status == 200 else f"HTTP {r.status}"

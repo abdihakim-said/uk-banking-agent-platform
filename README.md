@@ -16,7 +16,7 @@ carry it out: the customer has to confirm first. Every turn reports its cost, it
 | The **AI assistant layer** a bank would put in front of its systems: agents, guardrails, tool servers, cost control, observability, Kubernetes deployment | A bank, or an online-banking app |
 | A chat web app for two **synthetic** customers (Amina and Daniel) | Accounts dashboards, payments, transfers or payees (there are no payment tools) |
 | Tool servers over an in-process **synthetic core banking** model, with runtime state shared through Redis | Connected to a real core banking system, card processor or payment rails |
-| A demo login service that issues test tokens | Real customer login with MFA or strong customer authentication |
+| A demo login service that issues test tokens and simulated one-time codes | Real customer login, or codes sent by real SMS or push |
 | A human-handoff decision, returned to the caller | A contact-centre queue that receives the handoff |
 
 ## Why this exists
@@ -31,6 +31,8 @@ Putting an LLM in front of bank customers raises five problems that a chatbot de
 | Wrong numbers stated confidently | An output guard checks that every £ amount in a reply appears in that turn's tool results; any other figure is blocked. |
 | Cost and accountability | Token cost is tracked per call, per session and per customer per day, with budgets. Every turn returns its route, tools, provider and latency, and is traced with OpenTelemetry. |
 | Traffic between services, and the record of what happened | Mutual TLS on every internal hop, Redis with TLS, client certificates and a password, and a tamper-evident (HMAC-chained) audit log of every security-relevant event. See [docs/security.md](docs/security.md). |
+| High-risk changes and data leaving the bank | Card replacement and contact changes need a one-time code bound to that exact action (strong customer authentication). The agent can reach only the model API, through an egress allowlist proxy. |
+| Proving it holds | A 39-attack AI red team, Semgrep, Gitleaks, pip-audit, Trivy and an OWASP ZAP scan, all in CI on every push. |
 
 ## Architecture
 
@@ -87,8 +89,9 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install          # venv + dependencies
 make demo             # scripted conversation through the whole stack, offline (no API key, no Docker)
-make test             # 109 tests
+make test             # 118 tests
 make eval             # evaluation suite with thresholds (what CI runs)
+.venv/bin/bank-redteam   # 39 attacks against the assistant; any success fails
 ```
 
 With Claude (uses `ANTHROPIC_API_KEY` or an `ant auth login` profile; each turn costs a fraction of a cent to a few cents):
@@ -243,8 +246,6 @@ deploy/prometheus/ Prometheus config for compose, and rule unit tests
 - **Redaction is pattern-based** plus names from the identity token. It doesn't catch free-text descriptions of
   people or health details; add an NER model (`pip install -e ".[ner]"` plus a spaCy model) and test it on real
   traffic samples.
-- **No strong customer authentication step-up** for high-risk actions. A bank would require SCA (for example an
-  in-app approval) before reissuing cards or changing contact details, not just a typed "yes".
 - **No human-handoff integration.** The handoff flag is returned to the caller; wiring it to a contact-centre queue is
   out of scope.
 - **Not load-tested.** MCP connections are opened per turn; a production build would pool them.

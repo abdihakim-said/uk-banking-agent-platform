@@ -87,6 +87,8 @@ spec:
     {{- include "bank.np.redis" . | nindent 4 }}
     {{- if $c.demoIdp.enabled }}
     {{- include "bank.np.to" (dict "root" . "name" $c.demoIdp.name "port" $c.demoIdp.port) | nindent 4 }}
+    {{- else if .Values.egressProxy.enabled }}
+    {{- include "bank.np.to" (dict "root" . "name" "egress-proxy" "port" 3128) | nindent 4 }}
     {{- else }}
     - to: [{ipBlock: {cidr: {{ $np.externalEgress.cidr }}, except: {{ toJson $np.externalEgress.except }}}}]
       ports: [{port: 443, protocol: TCP}]
@@ -111,8 +113,13 @@ spec:
     {{- include "bank.np.to" (dict "root" $root "name" $m.name "port" $m.port) | nindent 4 }}
     {{- end }}
     {{- include "bank.np.redis" . | nindent 4 }}
+    {{- if .Values.egressProxy.enabled }}
+    # No direct internet: the egress proxy is the only way out, and it allows only the model API hostnames.
+    {{- include "bank.np.to" (dict "root" . "name" "egress-proxy" "port" 3128) | nindent 4 }}
+    {{- else }}
     - to: [{ipBlock: {cidr: {{ $np.externalEgress.cidr }}, except: {{ toJson $np.externalEgress.except }}}}]
       ports: [{port: 443, protocol: TCP}]
+    {{- end }}
 {{- range $k := list "accountsMcp" "transactionsMcp" "serviceMcp" }}
 {{- $m := index $c $k }}
 ---

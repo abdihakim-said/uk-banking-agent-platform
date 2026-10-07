@@ -30,6 +30,7 @@ dev = ["fakeredis>=2.26", "mypy>=1.11", "pytest>=8", "pytest-asyncio>=0.24", "ru
 [project.scripts]
 bank-eval = "bank_assistant.evals.run:main"
 bank-audit = "bank_assistant.core.audit:main"
+bank-redteam = "bank_assistant.evals.redteam:main"
 bank-serve = "bank_assistant.serve:main"
 
 [build-system]

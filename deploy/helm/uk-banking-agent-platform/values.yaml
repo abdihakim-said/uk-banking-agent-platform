@@ -71,6 +71,17 @@ tls:
     duration: 2160h      # 90 days
     renewBefore: 360h    # 15 days
 
+# Egress allowlist: the agent's only route out of the cluster is a Squid proxy that allows HTTPS to these hostnames.
+# NetworkPolicy then blocks every other destination, so a hijacked model can't send data anywhere else.
+egressProxy:
+  enabled: true
+  image: {repository: ghcr.io/abdihakim-said/uk-banking-agent-platform-egress, tag: "", pullPolicy: IfNotPresent}
+  allowedDomains: [api.anthropic.com]
+  replicas: 2
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 128Mi}
+
 # In-cluster Redis (TLS, client certificates and a password, but no persistence). For local clusters and demos only.
 redis:
   deploy: false
