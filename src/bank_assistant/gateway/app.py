@@ -48,6 +48,8 @@ class ChatResponse(BaseModel):
     handoff: bool
     route: str
     redacted: list[str] = Field(default_factory=list, description="Kinds of personal data hidden from the AI")
+    pending_action: dict[str, Any] | None = Field(
+        default=None, description="The action awaiting confirmation: id, binding, and whether it needs a one-time code")
 
 
 def create_app(settings: Settings | None = None, redis: Redis | None = None, verifier: JwtVerifier | None = None,
@@ -99,7 +101,8 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
 
     @app.post("/v1/chat", response_model=ChatResponse)
     async def chat(body: ChatRequest, request: Request,
-                   authorization: Annotated[str | None, Header()] = None) -> ChatResponse:
+                   authorization: Annotated[str | None, Header()] = None,
+                   x_sca_token: Annotated[str | None, Header(alias="X-SCA-Token")] = None) -> ChatResponse:
         redis_client: Redis = deps["redis"]
         started = time.perf_counter()
         client_ip = request.client.host if request.client else "unknown"
@@ -122,6 +125,16 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                     await audit.record("rate_limited", outcome="denied", actor=principal.customer_id, scope=scope,
                                        ip=client_ip)
                 raise fail(429, "too many requests", "rate_limited", {"Retry-After": str(retry_after)})
+
+        sca: dict[str, str] | None = None
+        if x_sca_token:
+            try:
+                sca = deps["verifier"].verify_step_up(x_sca_token, principal)
+            except AuthError as exc:
+                if audit:
+                    await audit.record("sca_token_rejected", outcome="denied", actor=principal.customer_id,
+                                       reason=exc.detail)
+                raise fail(exc.status, exc.detail, "sca_rejected") from exc
 
         if len(body.message) > settings.max_message_chars:
             raise fail(422, f"message is longer than {settings.max_message_chars} characters", "invalid")
@@ -154,7 +167,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                     "/internal/v1/turns",
                     headers=headers,
                     json={"session_id": session_id, "customer_id": principal.customer_id, "message": redacted,
-                          "known_names": principal.names},
+                          "known_names": principal.names, "sca": sca},
                 )
             except httpx.HTTPError as exc:
                 log.error("agent_unreachable", error=type(exc).__name__)
@@ -174,7 +187,7 @@ def create_app(settings: Settings | None = None, redis: Redis | None = None, ver
                      cost_usd=turn["cost_usd"])
             return ChatResponse(session_id=session_id, reply=vault.render_for_customer(turn["reply"]),
                                 awaiting_confirmation=turn["awaiting_confirmation"], handoff=turn["handoff"],
-                                route=turn["route"], redacted=hidden)
+                                route=turn["route"], redacted=hidden, pending_action=turn.get("pending_action"))
         finally:
             await lock.release(session_id)
 

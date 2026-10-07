@@ -76,5 +76,7 @@ REPLIES = {
     "refusal": "Sorry, I can't help with that request here. Please call us and we'll help.",
     "step_limit": "Sorry, I couldn't complete that. Please try rephrasing, or call us.",
     "cancelled": "No problem, I haven't made any changes.",
+    "sca_required": "This change needs extra security before I can make it. Approve it in the app with the one-time "
+                    "code we send to your phone, or reply NO to cancel.",
     "expired": "That request expired before it was confirmed, so I haven't made any changes. Please ask again.",
 }

@@ -8,6 +8,8 @@ executes those stored arguments. Nothing the model writes later can change them.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 import uuid
@@ -37,6 +39,18 @@ RESULT_LABELS = {
 
 PENDING_TTL_SECONDS = 600
 
+# Actions that need strong customer authentication (PSD2 SCA style) on top of the "yes": a one-time code on the
+# customer's registered device, exchanged for a step-up token bound to this exact action.
+HIGH_RISK_TOOLS = frozenset({"reissue_card", "submit_kyc_update"})
+SCA_ACR = "urn:bank:sca:otp"
+
+
+def action_binding(tool: str, arguments: dict[str, Any]) -> str:
+    """'Dynamic linking': a fingerprint of exactly what will run. The step-up token must carry the same value, so a
+    code approved for one action can't authorise a different one."""
+    canonical = json.dumps({"tool": tool, "arguments": arguments}, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
 
 @dataclass
 class PendingAction:
@@ -47,6 +61,18 @@ class PendingAction:
     action: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: float = field(default_factory=time.time)
+    sca_required: bool = False
+    binding: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.binding:
+            self.binding = action_binding(self.tool, self.arguments)
+        if self.tool in HIGH_RISK_TOOLS:
+            self.sca_required = True
+
+    def public(self) -> dict[str, Any]:
+        """What the client may see: enough to start a step-up, nothing about the arguments."""
+        return {"id": self.id, "action": self.action, "sca_required": self.sca_required, "binding": self.binding}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,7 +102,10 @@ def summarise_preview(preview: dict[str, Any]) -> tuple[str, str]:
     return action, f"{ACTION_LABELS.get(action, 'Submit a request')}. {parts}."
 
 
-def confirmation_prompt(summary: str) -> str:
+def confirmation_prompt(summary: str, sca_required: bool = False) -> str:
+    if sca_required:
+        return (f"Please check this before I go ahead:\n{summary}\nThis change needs extra security: approve it in the "
+                "app with the one-time code we send to your phone, or reply NO to cancel.")
     return f"Please check this before I go ahead:\n{summary}\nReply YES to confirm or NO to cancel."
 
 

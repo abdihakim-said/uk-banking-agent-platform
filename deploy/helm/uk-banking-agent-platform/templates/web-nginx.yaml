@@ -54,6 +54,11 @@ data:
             limit_req_status 429;
             proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/token;
         }
+        location ~ ^/auth/sca/(challenge|verify)$ {
+            limit_req zone=per_ip burst=5 nodelay;
+            limit_req_status 429;
+            proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/sca/$1;
+        }
         {{- end }}
         location = /healthz { access_log off; return 200 "ok\n"; }
     }

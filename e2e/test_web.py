@@ -55,3 +55,25 @@ def test_handoff_and_customer_isolation(page: Page) -> None:
     ask(page, "What's my balance?")
     expect(last_reply(page)).to_contain_text("312.04")
     expect(last_reply(page)).not_to_contain_text("1842.37")
+
+
+def test_high_risk_change_needs_a_one_time_code(page: Page) -> None:
+    # An address change can be repeated, so this stays valid against a long-running stack.
+    sign_in(page, "amina")
+    ask(page, "Change my address to 5 New Road, London, SW1A 1AA")
+    reply = last_reply(page)
+    expect(reply).to_contain_text("Needs a one-time code")
+    reply.get_by_test_id("confirm-yes").click()
+
+    expect(page.get_by_test_id("demo-phone")).to_be_visible()
+    code = page.get_by_test_id("demo-otp").inner_text().strip()
+    wrong = "000000" if code != "000000" else "111111"
+    page.get_by_test_id("sca-code").fill(wrong)
+    page.get_by_test_id("sca-submit").click()
+    expect(page.get_by_test_id("sca-msg")).to_contain_text("attempts left")
+
+    before = page.get_by_test_id("bot-message").count()
+    page.get_by_test_id("sca-code").fill(code)
+    page.get_by_test_id("sca-submit").click()
+    expect(page.get_by_test_id("bot-message")).to_have_count(before + 1, timeout=60_000)
+    expect(last_reply(page)).to_contain_text("contact details change has been submitted")

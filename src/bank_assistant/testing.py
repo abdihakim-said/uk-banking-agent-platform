@@ -76,12 +76,25 @@ class Stack:
         claims = {k: v for k, v in claims.items() if v is not None}
         return jwt.encode(claims, self.private_key, algorithm="RS256")
 
-    async def chat(self, message: str, session_id: str | None = None, customer_id: str = "C001") -> httpx.Response:
+    async def chat(self, message: str, session_id: str | None = None, customer_id: str = "C001",
+                   sca_token: str | None = None) -> httpx.Response:
         body: dict[str, Any] = {"message": message}
         if session_id:
             body["session_id"] = session_id
-        return await self.client.post("/v1/chat", json=body,
-                                      headers={"Authorization": f"Bearer {self.token(customer_id)}"})
+        headers = {"Authorization": f"Bearer {self.token(customer_id)}"}
+        if sca_token:
+            headers["X-SCA-Token"] = sca_token
+        return await self.client.post("/v1/chat", json=body, headers=headers)
+
+    def step_up(self, txn: str, customer_id: str = "C001", **overrides: Any) -> str:
+        """A step-up token as the IdP would issue after a correct one-time code (see demo_idp)."""
+        from bank_assistant.gateway.auth import SCA_ACR
+
+        now = int(time.time())
+        claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": f"user-{customer_id}", "customer_id": customer_id,
+                  "iat": now, "exp": now + 300, "acr": SCA_ACR, "amr": ["pwd", "otp"], "txn": txn}
+        claims.update(overrides)
+        return jwt.encode(claims, self.private_key, algorithm="RS256")
 
     @property
     def llm_input(self) -> str:

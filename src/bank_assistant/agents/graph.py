@@ -83,6 +83,8 @@ class TurnState(TypedDict, total=False):
     provider: str | None
     cost_usd: Decimal
     awaiting_confirmation: bool
+    pending_action: dict[str, Any] | None  # public view of the action awaiting confirmation (id, binding, SCA flag)
+    sca: dict[str, Any] | None  # verified step-up claims forwarded by the gateway (txn, acr), if any
     guard_findings: list[str]
     trajectory: Annotated[list[dict[str, Any]], operator.add]
 
@@ -98,6 +100,7 @@ class TurnResult:
     cost_usd: Decimal
     trajectory: list[dict[str, Any]]
     tool_calls: list[dict[str, Any]]
+    pending_action: dict[str, Any] | None = None
 
 
 def _step(node: str, started: float, **info: Any) -> list[dict[str, Any]]:
@@ -181,6 +184,19 @@ def build_graph(deps: AgentDeps) -> Any:
             await audit("action_abandoned", state, "abandoned", tool=pending.tool, pending_id=pending.id)
             return {"trajectory": _step("confirm", t, decision="abandoned")}
 
+        if pending.sca_required:
+            sca = state.get("sca") or {}
+            if sca.get("txn") != pending.binding:
+                # No step-up, or one approved for a different action: keep the action waiting, change nothing.
+                await deps.store.set_pending(state["session_id"], pending.to_dict())
+                metrics.CONFIRMATIONS.labels(pending.tool, "sca_required").inc()
+                await audit("sca_required", state, "refused", tool=pending.tool, pending_id=pending.id,
+                            presented=bool(sca))
+                return {"reply": REPLIES["sca_required"], "route": pending.domain, "route_method": "confirmation",
+                        "outcome": "sca_required", "awaiting_confirmation": True, "pending_action": pending.public(),
+                        "trajectory": _step("confirm", t, decision="sca_required")}
+            await audit("sca_verified", state, "ok", tool=pending.tool, pending_id=pending.id, acr=sca.get("acr"))
+
         token = issue_context_token(state["customer_id"], state["session_id"], deps.context_secret,
                                     deps.context_ttl_seconds)
         target = deps.mcp_targets[pending.domain]
@@ -238,10 +254,12 @@ def build_graph(deps: AgentDeps) -> Any:
             if result.pending is not None:
                 await deps.store.set_pending(state["session_id"], result.pending.to_dict())
                 await audit("action_proposed", state, "awaiting_confirmation", tool=result.pending.tool,
-                            action=result.pending.action, pending_id=result.pending.id)
+                            action=result.pending.action, pending_id=result.pending.id,
+                            sca_required=result.pending.sca_required)
             return {"reply": result.reply, "outcome": result.outcome, "provider": result.provider,
                     "tool_payloads": result.tool_payloads, "tool_calls": result.tool_calls,
                     "awaiting_confirmation": result.pending is not None,
+                    "pending_action": result.pending.public() if result.pending else None,
                     "trajectory": _step(f"{domain}_agent", t, outcome=result.outcome, provider=result.provider,
                                         tools=[c["tool"] for c in result.tool_calls])}
         return node
@@ -312,14 +330,14 @@ class AgentEngine:
         self.graph = build_graph(deps)
 
     async def run_turn(self, session_id: str, customer_id: str, user_text: str,
-                       known_names: list[str] | None = None) -> TurnResult:
+                       known_names: list[str] | None = None, sca: dict[str, Any] | None = None) -> TurnResult:
         started = time.perf_counter()
         with tracer.start_as_current_span("agent.turn") as span:
             span.set_attribute("session.id", session_id)
             try:
                 state: TurnState = await self.graph.ainvoke({
                     "session_id": session_id, "customer_id": customer_id, "user_text": user_text,
-                    "known_names": known_names or [], "trajectory": [], "tool_calls": [],
+                    "known_names": known_names or [], "trajectory": [], "tool_calls": [], "sca": sca,
                 })
             except BudgetExceededError as exc:
                 log.warning("turn_budget_exceeded", scope=exc.scope)
@@ -345,6 +363,7 @@ class AgentEngine:
             handoff=state.get("handoff", False), awaiting_confirmation=state.get("awaiting_confirmation", False),
             provider=state.get("provider"), cost_usd=state.get("cost_usd", Decimal("0")),
             trajectory=state.get("trajectory", []), tool_calls=state.get("tool_calls", []),
+            pending_action=state.get("pending_action"),
         )
         log.info("agent_turn", session_id=session_id, route=result.route, outcome=result.outcome,
                  provider=result.provider, cost_usd=str(result.cost_usd), steps=[s["node"] for s in result.trajectory],

@@ -91,7 +91,8 @@ async def run_domain_agent(
                 action, summary = summarise_preview(preview.data)
                 result.pending = PendingAction(domain=domain, tool=call.name, arguments=args, summary=summary,
                                                action=action)
-                result.reply, result.outcome = confirmation_prompt(summary), "confirmation_required"
+                result.reply, result.outcome = (confirmation_prompt(summary, result.pending.sca_required),
+                                                "confirmation_required")
                 return result
 
             outcome = await toolbox.call(call.name, args, context_token)

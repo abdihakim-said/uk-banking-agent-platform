@@ -82,16 +82,80 @@ function addBot(reply) {
                  "A member of our team will pick this up. You don't need to repeat yourself."));
   }
   if (reply.awaiting_confirmation) {
+    const pending = reply.pending_action;
+    const needsCode = Boolean(pending && pending.sca_required);
+    if (needsCode) meta.append(el("span", { class: "badge badge-sca" }, "Needs a one-time code"));
     const actions = el("div", { class: "actions" });
-    const yes = el("button", { type: "button", class: "primary", "data-testid": "confirm-yes" }, "Yes, go ahead");
+    const yes = el("button", { type: "button", class: "primary", "data-testid": "confirm-yes" },
+                   needsCode ? "Approve with a one-time code" : "Yes, go ahead");
     const no = el("button", { type: "button", "data-testid": "confirm-no" }, "No, cancel");
-    const answer = (text) => { yes.disabled = no.disabled = true; send(text); };
-    yes.addEventListener("click", () => answer("yes"));
-    no.addEventListener("click", () => answer("no"));
+    yes.addEventListener("click", () => {
+      yes.disabled = no.disabled = true;
+      if (needsCode) startSca(pending, li); else send("yes");
+    });
+    no.addEventListener("click", () => { yes.disabled = no.disabled = true; send("no"); });
     actions.append(yes, no);
     li.append(actions);
   }
   $("messages").append(li);
+}
+
+// Strong customer authentication: the IdP "texts" a one-time code to the registered phone; a correct code is exchanged
+// for a short-lived step-up token bound to this exact action, sent with the "yes".
+async function startSca(pending, li) {
+  const res = await fetch("/auth/sca/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` },
+    body: JSON.stringify({ txn: pending.binding }),
+  });
+  if (!res.ok) return addSystem("Couldn't start the security check. Please try again.");
+  const challenge = await res.json();
+  showPhone(challenge.delivered_to, challenge.demo_code);
+
+  const form = el("form", { class: "sca", "data-testid": "sca-form" });
+  const id = `otp-${challenge.challenge_id.slice(0, 8)}`;
+  const input = el("input", { id, inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6",
+                              pattern: "\\d{6}", required: "", "data-testid": "sca-code" });
+  const submit = el("button", { type: "submit", class: "primary", "data-testid": "sca-submit" }, "Approve");
+  const message = el("p", { class: "sca-msg", "data-testid": "sca-msg" });
+  form.append(el("label", { for: id }, `Enter the 6-digit code sent to your ${challenge.delivered_to}`),
+              el("div", { class: "sca-row" }), message);
+  form.querySelector(".sca-row").append(input, submit);
+  li.append(form);
+  input.focus();
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const verify = await fetch("/auth/sca/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challenge_id: challenge.challenge_id, code: input.value.trim() }),
+    });
+    const data = await verify.json().catch(() => ({}));
+    if (!verify.ok) {
+      message.textContent = data.detail || "That code didn't work.";
+      if (/start again/.test(message.textContent)) input.disabled = submit.disabled = true;
+      return;
+    }
+    input.disabled = submit.disabled = true;
+    message.textContent = "Approved.";
+    hidePhone();
+    send("yes", data.step_up_token);
+  });
+}
+
+function showPhone(deliveredTo, code) {
+  hidePhone();
+  const phone = el("aside", { class: "phone", "data-testid": "demo-phone", "aria-live": "polite" });
+  phone.append(el("p", { class: "phone-label" }, `Demo · SMS to your ${deliveredTo}`),
+               el("p", {}, "Your Bank code to approve this change is"),
+               el("p", { class: "phone-code", "data-testid": "demo-otp" }, code),
+               el("p", { class: "phone-small" }, "We'll never call you to ask for this code."));
+  document.body.append(phone);
+}
+
+function hidePhone() {
+  document.querySelector(".phone")?.remove();
 }
 
 function markRedactions(userLi, kinds) {
@@ -102,7 +166,7 @@ function markRedactions(userLi, kinds) {
                    `Hidden from AI: ${names.join(", ")}`));
 }
 
-async function send(text) {
+async function send(text, scaToken) {
   if (state.busy || !state.token) return;
   state.busy = true;
   $("send").disabled = true;
@@ -114,7 +178,8 @@ async function send(text) {
   try {
     const res = await fetch("/api/v1/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}`,
+                 ...(scaToken ? { "X-SCA-Token": scaToken } : {}) },
       body: JSON.stringify(state.sessionId ? { message: text, session_id: state.sessionId } : { message: text }),
     });
     typing.remove();

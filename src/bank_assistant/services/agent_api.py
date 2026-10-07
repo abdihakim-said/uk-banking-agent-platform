@@ -35,6 +35,7 @@ class TurnRequest(BaseModel):
     customer_id: str = Field(min_length=1, max_length=64)
     message: str = Field(min_length=1, max_length=4000)
     known_names: list[str] = Field(default_factory=list, max_length=5)
+    sca: dict[str, Any] | None = None  # step-up claims the gateway has already verified
 
 
 class TurnResponse(BaseModel):
@@ -43,6 +44,7 @@ class TurnResponse(BaseModel):
     outcome: str
     handoff: bool
     awaiting_confirmation: bool
+    pending_action: dict[str, Any] | None = None
     provider: str | None
     cost_usd: Decimal
     trajectory: list[dict[str, Any]]
@@ -83,9 +85,10 @@ def create_app(engine: AgentEngine | None = None, settings: Settings | None = No
     @app.post("/internal/v1/turns", response_model=TurnResponse, dependencies=[Depends(require_service_token)])
     async def run_turn(body: TurnRequest) -> TurnResponse:
         engine: AgentEngine = state["engine"]
-        result = await engine.run_turn(body.session_id, body.customer_id, body.message, body.known_names)
+        result = await engine.run_turn(body.session_id, body.customer_id, body.message, body.known_names, body.sca)
         return TurnResponse(reply=result.reply, route=result.route, outcome=result.outcome, handoff=result.handoff,
-                            awaiting_confirmation=result.awaiting_confirmation, provider=result.provider,
+                            awaiting_confirmation=result.awaiting_confirmation,
+                            pending_action=result.pending_action, provider=result.provider,
                             cost_usd=result.cost_usd, trajectory=result.trajectory)
 
     @app.get("/healthz")

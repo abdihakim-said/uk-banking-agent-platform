@@ -3,6 +3,7 @@
   --brand: #0b5f4a; --brand-text: #ffffff; --user: #e7f2ee;
   --pii-bg: #e8eefc; --pii-fg: #22409a; --confirm-bg: #fff4d6; --confirm-fg: #7a5200;
   --human-bg: #fde8e8; --human-fg: #9b1c1c; --guard-bg: #ececec; --guard-fg: #3d434a;
+  --sca-bg: #ece6fb; --sca-fg: #4b2a9b; --phone-bg: #1d2127; --phone-fg: #f5f6f8;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: light dark;
 }
@@ -12,6 +13,7 @@
     --brand: #3fb391; --brand-text: #0b1512; --user: #18322a;
     --pii-bg: #1d2a4d; --pii-fg: #b9c9f5; --confirm-bg: #3a2f10; --confirm-fg: #f3d58a;
     --human-bg: #401c1c; --human-fg: #f5b5b5; --guard-bg: #2a2f35; --guard-fg: #cfd4da;
+    --sca-bg: #2d2349; --sca-fg: #d3c5fb; --phone-bg: #f5f6f8; --phone-fg: #1d2127;
   }
 }
 * { box-sizing: border-box; }
@@ -80,3 +82,19 @@ button:disabled { cursor: default; opacity: .55; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .legend { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); }
 .note { color: var(--muted); margin-top: 16px; }
+
+.badge-sca { background: var(--sca-bg); color: var(--sca-fg); }
+.sca { margin-top: 10px; display: grid; gap: 6px; }
+.sca label { font-size: 14px; }
+.sca-row { display: flex; gap: 8px; }
+.sca input { width: 9ch; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  color: var(--text); font: inherit; letter-spacing: 0.2em; font-variant-numeric: tabular-nums; }
+.sca button { border: 0; border-radius: 8px; padding: 6px 12px; background: var(--brand); color: var(--brand-text); }
+.sca-msg { margin: 0; font-size: 13px; color: var(--muted); min-height: 1em; }
+.phone { position: fixed; bottom: 16px; right: 16px; width: min(280px, calc(100vw - 32px)); padding: 12px 14px;
+  border-radius: 14px; background: var(--phone-bg); color: var(--phone-fg); box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  z-index: 10; }
+.phone p { margin: 0 0 4px; font-size: 13px; }
+.phone .phone-label { opacity: 0.7; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.phone .phone-code { font-size: 26px; font-weight: 700; letter-spacing: 0.15em; font-variant-numeric: tabular-nums; }
+.phone .phone-small { opacity: 0.7; font-size: 12px; }
