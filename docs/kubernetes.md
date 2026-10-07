@@ -77,9 +77,10 @@ With kube-prometheus-stack installed, set `monitoring.serviceMonitor`, `monitori
 ## GitOps with Argo CD
 
 1. `kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/application-dev.yaml -f deploy/argocd/application-prod.yaml`
-2. The repository is private. Give Argo CD read access with a GitHub App or a deploy key:
-   `argocd repo add https://github.com/abdihakim-said/uk-banking-agent-platform.git --github-app-id ...`
-3. Create the `ghcr-pull` image pull secret in both namespaces (the GHCR packages are private).
+2. The repository is public, so Argo CD can read it without credentials. For a private fork, add access with a GitHub
+   App or a deploy key: `argocd repo add <repo-url> --github-app-id ...`
+3. If your container images are private (GHCR packages are private by default), create the `ghcr-pull` image pull
+   secret in both namespaces. With public packages, remove `imagePullSecrets` from the values file.
 
 On every merge to `main`, CI:
 - builds the images once

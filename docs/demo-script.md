@@ -16,7 +16,7 @@ chat**: the chat is only the window onto the platform.
    1. http://localhost:3080 (the chat app)
    2. http://localhost:16686 (Jaeger traces)
    3. http://localhost:3300 (Grafana; the dashboard opens by default)
-   4. the architecture diagram: https://claude.ai/artifact/CoMu5EH9bUQ8K1HhNaALGS
+   4. the architecture diagram (the one in the README, or your own one-page copy)
 4. **Warm up the dashboard.** Sign in as Amina and send 3 or 4 messages, then refresh the page so the chat is empty
    again. Grafana needs a few minutes of data to draw lines.
 5. **Prepare the screen.** Browser zoom at 110–125%, notifications off, desktop tidy.

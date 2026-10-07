@@ -5,7 +5,7 @@ image:
   tag: "sha-ce64d9a"
 webImage:
   tag: "sha-ce64d9a"
-imagePullSecrets: [{name: ghcr-pull}]   # the GHCR packages are private
+imagePullSecrets: [{name: ghcr-pull}]   # needed while the GHCR packages are private (the default)
 
 config:
   llmRoute: anthropic,rule_based

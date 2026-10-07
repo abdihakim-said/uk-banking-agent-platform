@@ -223,7 +223,7 @@ deploy/kind/      local cluster config and smoke test
 deploy/prometheus/ Prometheus config for compose, and rule unit tests
 ```
 
-## Differences from the original brief
+## Design notes
 
 - Packages live under `src/bank_assistant/…` (for example `src/bank_assistant/security/`) rather than top-level
   `src/security/`, so the project installs as one package.
