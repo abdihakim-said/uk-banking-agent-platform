@@ -9,7 +9,9 @@ metadata:
 data:
   default.conf: |
     # Rendered by Helm: same behaviour as web/nginx.conf, with cluster service names.
+    # Separate budgets: chat traffic must not use up the allowance for sign-in and one-time-code checks.
     limit_req_zone $binary_remote_addr zone=per_ip:10m rate=5r/s;
+    limit_req_zone $binary_remote_addr zone=auth_per_ip:10m rate=5r/s;
     server {
         listen {{ $c.web.port }};
         server_tokens off;
@@ -54,12 +56,12 @@ data:
         {{- $idp := printf "%s:%v" (include "bank.component" (dict "root" . "name" $c.demoIdp.name)) $c.demoIdp.port }}
         location = /auth/personas { proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/personas; }
         location = /auth/token {
-            limit_req zone=per_ip burst=5 nodelay;
+            limit_req zone=auth_per_ip burst=5 nodelay;
             limit_req_status 429;
             proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/token;
         }
         location ~ ^/auth/sca/(challenge|verify)$ {
-            limit_req zone=per_ip burst=5 nodelay;
+            limit_req zone=auth_per_ip burst=5 nodelay;
             limit_req_status 429;
             proxy_pass {{ include "bank.scheme" . }}://{{ $idp }}/sca/$1;
         }
