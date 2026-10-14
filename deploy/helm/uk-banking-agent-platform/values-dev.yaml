@@ -2,9 +2,9 @@
 # image.tag is written by CI on every merge to main ("build once, promote by Git").
 environment: dev
 image:
-  tag: "sha-ce64d9a"
+  tag: "sha-cfd827b"
 webImage:
-  tag: "sha-ce64d9a"
+  tag: "sha-cfd827b"
 imagePullSecrets: [{name: ghcr-pull}]   # needed while the GHCR packages are private (the default)
 
 config:
