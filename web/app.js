@@ -108,6 +108,7 @@ async function startSca(pending, li) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` },
     body: JSON.stringify({ txn: pending.binding }),
   });
+  if (res.status === 429) return addSystem("Too many attempts. Please wait a few seconds and try again.");
   if (!res.ok) return addSystem("Couldn't start the security check. Please try again.");
   const challenge = await res.json();
   showPhone(challenge.delivered_to, challenge.demo_code);
@@ -131,6 +132,11 @@ async function startSca(pending, li) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ challenge_id: challenge.challenge_id, code: input.value.trim() }),
     });
+    if (verify.status === 429) {
+      // Rate limited before the code was checked, so it still counts as unused: let the customer retry.
+      message.textContent = "Too many attempts. Please wait a few seconds and try again.";
+      return;
+    }
     const data = await verify.json().catch(() => ({}));
     if (!verify.ok) {
       message.textContent = data.detail || "That code didn't work.";
