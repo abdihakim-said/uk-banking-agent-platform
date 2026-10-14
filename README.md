@@ -9,6 +9,10 @@ carry it out: the customer has to confirm first. Every turn reports its cost, it
 > is: compliance belongs to the firm that operates it. [`docs/compliance.md`](docs/compliance.md) maps each control
 > to the UK obligation it supports and lists what a bank would still have to add.
 
+![Offline demo: balance, transaction search, a dispute that waits for YES, a stolen-card replacement that needs a one-time code, a prompt-injection attempt refused, and regulated advice redirected to MoneyHelper](docs/img/demo.gif)
+
+<sub>`make demo`: offline, synthetic customers, no API key.</sub>
+
 ## What this is, and what it isn't
 
 | It is | It isn't |
