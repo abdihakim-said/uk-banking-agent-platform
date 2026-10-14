@@ -1,5 +1,7 @@
 # UK Banking Agent Platform
 
+[![ci](https://github.com/abdihakim-said/uk-banking-agent-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/abdihakim-said/uk-banking-agent-platform/actions/workflows/ci.yml)
+
 A reference implementation of a multi-agent customer assistant for UK retail banking. Customer PII is redacted before any
 model sees it. Agents reach backend systems only through MCP tool servers. The model can propose an action but cannot
 carry it out: the customer has to confirm first. Every turn reports its cost, its trace and the path it took.
